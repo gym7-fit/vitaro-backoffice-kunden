@@ -118,6 +118,7 @@ a.link:hover{text-decoration:underline;}
     <div class="tabs" id="tabs">
       <button data-tab="kunden" class="active">Kunden <span class="count" id="countKunden"></span></button>
       <button data-tab="hersteller">Hersteller <span class="count" id="countHersteller"></span></button>
+      <button data-tab="geraete">Geräte <span class="count" id="countGeraete"></span></button>
       <button data-tab="montage_partner">Montage-Partner <span class="count" id="countPartner"></span></button>
       <button data-tab="projekte">Projekte <span class="count" id="countProjekte"></span></button>
     </div>
@@ -148,7 +149,8 @@ var QUELLE_OPTIONS = ["Planer-Registrierung","Kontaktformular","Direktakquise","
 var PROJEKT_STATUS_OPTIONS = ["Angebot","Beauftragt","In Umsetzung","Abgeschlossen"];
 var STATUS_PILL = {"Kunde":"ok","Projekt abgeschlossen":"ok","Angebot erstellt":"warn","Erstgespräch vereinbart":"warn","Interessent":"neutral","Abgeschlossen":"ok","In Umsetzung":"warn","Beauftragt":"warn","Angebot":"neutral"};
 
-var state = { session: null, tab: "kunden", search: "", kunden: [], hersteller: [], partner: [], projekte: [] };
+var TIER_LABELS = { budget:"Einstieg", premium:"Premium" };
+var state = { session: null, tab: "kunden", search: "", kunden: [], hersteller: [], geraete: [], partner: [], projekte: [] };
 
 function escapeHtml(s){ return String(s == null ? "" : s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
 function toast(msg){
@@ -210,9 +212,17 @@ async function api(path, opts, _retried){
 
 /* ---------- Laden ---------- */
 async function loadAll(){
-  await Promise.all([loadKunden(), loadHersteller(), loadPartner(), loadProjekte()]);
+  await Promise.all([loadKunden(), loadHersteller(), loadGeraete(), loadPartner(), loadProjekte()]);
   renderTabs();
   renderTable();
+}
+
+async function loadGeraete(){
+  try{
+    var res = await api("/geraete?select=*,hersteller(id,name)&order=kategorie.asc,tier.asc");
+    if(!res.ok) throw new Error("HTTP " + res.status);
+    state.geraete = await res.json();
+  }catch(err){ toast("Fehler beim Laden der Geräte: " + err.message); }
 }
 
 async function loadHersteller(){
@@ -270,6 +280,35 @@ async function deleteHersteller(id){
   var res = await api("/hersteller?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
+async function saveGeraet(payload, id){
+  var res = id
+    ? await api("/geraete?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) })
+    : await api("/geraete", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function deleteGeraet(id){
+  var res = await api("/geraete?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
+/* ---------- Projekt-Positionen (bestellte Geräte je Projekt, n:m) ---------- */
+async function loadPositionen(projektId){
+  var res = await api("/projekt_positionen?projekt_id=eq." + encodeURIComponent(projektId) + "&select=*,geraete(id,modell,kategorie,tier,preis,hersteller(name))&order=created_at.asc");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function addPosition(projektId, geraetId, menge, einzelpreis){
+  var res = await api("/projekt_positionen", {
+    method:"POST", headers:{"Prefer":"return=minimal"},
+    body: JSON.stringify({ projekt_id: projektId, geraet_id: geraetId, menge: menge, einzelpreis: einzelpreis })
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function deletePosition(id){
+  var res = await api("/projekt_positionen?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
 async function savePartner(payload, id){
   var res = id
     ? await api("/montage_partner?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) })
@@ -308,11 +347,12 @@ function renderShell(){
     document.getElementById("whoami").textContent = state.session.email;
   }
 }
-var TAB_LABELS = { kunden:"Kunde", hersteller:"Hersteller", montage_partner:"Montage-Partner", projekte:"Projekt" };
+var TAB_LABELS = { kunden:"Kunde", hersteller:"Hersteller", geraete:"Gerät", montage_partner:"Montage-Partner", projekte:"Projekt" };
 
 function renderTabs(){
   document.getElementById("countKunden").textContent = state.kunden.length;
   document.getElementById("countHersteller").textContent = state.hersteller.length;
+  document.getElementById("countGeraete").textContent = state.geraete.length;
   document.getElementById("countPartner").textContent = state.partner.length;
   document.getElementById("countProjekte").textContent = state.projekte.length;
   document.querySelectorAll("#tabs button").forEach(function(btn){
@@ -332,7 +372,7 @@ function formatEuro(n){
 
 /* ---------- Rendering: Tabelle je Tab ---------- */
 function rowsForTab(tab){
-  return tab === "kunden" ? state.kunden : tab === "hersteller" ? state.hersteller : tab === "montage_partner" ? state.partner : state.projekte;
+  return tab === "kunden" ? state.kunden : tab === "hersteller" ? state.hersteller : tab === "geraete" ? state.geraete : tab === "montage_partner" ? state.partner : state.projekte;
 }
 
 function currentRows(){
@@ -344,6 +384,8 @@ function currentRows(){
         ? [(r.kunden && r.kunden.name), r.status, r.paket, r.zustaendig, (r.montage_partner && r.montage_partner.name)]
         : state.tab === "hersteller"
         ? [r.name, r.kategorien, r.konditionen]
+        : state.tab === "geraete"
+        ? [r.modell, r.kategorie, (r.hersteller && r.hersteller.name)]
         : [r.name, r.email, r.status, r.quelle, r.typ, r.gewerk, r.plz_bereich];
       return hay.some(function(v){ return String(v || "").toLowerCase().indexOf(s) !== -1; });
     });
@@ -366,6 +408,7 @@ function renderTable(){
   var html;
   if(state.tab === "kunden") html = renderKundenTable(rows);
   else if(state.tab === "hersteller") html = renderHerstellerTable(rows);
+  else if(state.tab === "geraete") html = renderGeraeteTable(rows);
   else if(state.tab === "montage_partner") html = renderPartnerTable(rows);
   else html = renderProjekteTable(rows);
   host.innerHTML = html;
@@ -394,6 +437,20 @@ function renderHerstellerTable(rows){
       '<td>' + escapeHtml(r.konditionen || "—") + '</td>' +
       '<td>' + (r.liefert_montage ? '<span class="pill pill-ok">Ja</span>' : '<span class="pill pill-warn">Unklar/Nein</span>') + '</td>' +
       '<td>' + (r.website ? '<a class="link" href="' + escapeHtml(r.website) + '" target="_blank" rel="noopener">Website ↗</a>' : "—") + '</td>' +
+      '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
+  });
+  return html + '</tbody></table>';
+}
+function renderGeraeteTable(rows){
+  var html = '<table><thead><tr><th>Kategorie</th><th>Stufe</th><th>Modell</th><th>Hersteller</th><th>Preis</th><th>Website</th><th></th></tr></thead><tbody>';
+  rows.forEach(function(r){
+    html += '<tr>' +
+      '<td>' + escapeHtml(r.kategorie) + '</td>' +
+      '<td><span class="pill pill-' + (r.tier === "premium" ? "ok" : "neutral") + '">' + escapeHtml(TIER_LABELS[r.tier] || r.tier) + '</span></td>' +
+      '<td>' + escapeHtml(r.modell) + '</td>' +
+      '<td>' + (r.hersteller ? escapeHtml(r.hersteller.name) : "—") + '</td>' +
+      '<td>' + formatEuro(r.preis) + '</td>' +
+      '<td>' + (r.url ? '<a class="link" href="' + escapeHtml(r.url) + '" target="_blank" rel="noopener">Website ↗</a>' : "—") + '</td>' +
       '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
   });
   return html + '</tbody></table>';
@@ -427,7 +484,7 @@ function renderProjekteTable(rows){
   return html + '</tbody></table>';
 }
 
-var DELETE_LABELS = { kunden:"diesen Kunden", hersteller:"diesen Hersteller", montage_partner:"diesen Montage-Partner", projekte:"dieses Projekt" };
+var DELETE_LABELS = { kunden:"diesen Kunden", hersteller:"diesen Hersteller", geraete:"dieses Gerät", montage_partner:"diesen Montage-Partner", projekte:"dieses Projekt" };
 
 function wireRowActions(){
   document.querySelectorAll("[data-edit]").forEach(function(btn){
@@ -442,6 +499,7 @@ function wireRowActions(){
       try{
         if(state.tab === "kunden") await deleteKunde(btn.dataset.delete);
         else if(state.tab === "hersteller") await deleteHersteller(btn.dataset.delete);
+        else if(state.tab === "geraete") await deleteGeraet(btn.dataset.delete);
         else if(state.tab === "montage_partner") await deletePartner(btn.dataset.delete);
         else await deleteProjekt(btn.dataset.delete);
         toast("Gelöscht.");
@@ -459,6 +517,7 @@ function opts(list, val){
 function openForm(existing){
   if(state.tab === "kunden") return openKundeForm(existing);
   if(state.tab === "hersteller") return openHerstellerForm(existing);
+  if(state.tab === "geraete") return openGeraetForm(existing);
   if(state.tab === "montage_partner") return openPartnerForm(existing);
   return openProjektForm(existing);
 }
@@ -519,6 +578,34 @@ function openHerstellerForm(existing){
   });
 }
 
+function openGeraetForm(existing){
+  var d = existing || {};
+  var herstellerSel = '<option value="">— kein Hersteller —</option>' + state.hersteller.map(function(h){
+    return '<option value="' + h.id + '"' + (d.hersteller_id === h.id || (d.hersteller && d.hersteller.id === h.id) ? " selected" : "") + '>' + escapeHtml(h.name) + '</option>';
+  }).join("");
+  document.getElementById("modalRoot").innerHTML =
+    '<div class="modal-backdrop" id="modalBackdrop"><div class="modal">' +
+      '<h2>' + (existing ? "Gerät bearbeiten" : "Gerät anlegen") + '</h2>' +
+      '<form id="entityForm">' +
+        '<div class="field"><label>Kategorie *</label><input name="kategorie" required value="' + escapeHtml(d.kategorie) + '"></div>' +
+        '<div class="field-row"><div class="field"><label>Stufe</label><select name="tier">' + opts(["budget","premium"], d.tier) + '</select></div>' +
+        '<div class="field"><label>Preis (€)</label><input type="number" step="0.01" name="preis" value="' + (d.preis == null ? "" : d.preis) + '"></div></div>' +
+        '<div class="field"><label>Modell *</label><input name="modell" required value="' + escapeHtml(d.modell) + '"></div>' +
+        '<div class="field"><label>Hersteller</label><select name="hersteller_id">' + herstellerSel + '</select></div>' +
+        '<div class="field"><label>Website / Produktlink</label><input name="url" value="' + escapeHtml(d.url) + '"></div>' +
+        '<div class="field"><label>Beschreibung</label><textarea name="blurb">' + escapeHtml(d.blurb) + '</textarea></div>' +
+        '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Abbrechen</button><button type="submit" class="btn">Speichern</button></div>' +
+      '</form></div></div>';
+  bindFormClose();
+  document.getElementById("entityForm").addEventListener("submit", async function(e){
+    e.preventDefault();
+    var f = e.target;
+    var payload = { kategorie:f.kategorie.value.trim(), tier:f.tier.value, preis: f.preis.value === "" ? null : Number(f.preis.value), modell:f.modell.value.trim(), hersteller_id: f.hersteller_id.value || null, url:f.url.value.trim(), blurb:f.blurb.value.trim() };
+    try{ await saveGeraet(payload, existing ? existing.id : null); toast(existing ? "Gerät aktualisiert." : "Gerät angelegt."); closeForm(); await loadAll(); }
+    catch(err){ toast("Fehler beim Speichern: " + err.message); }
+  });
+}
+
 function openPartnerForm(existing){
   var d = existing || {};
   document.getElementById("modalRoot").innerHTML =
@@ -546,7 +633,7 @@ function openPartnerForm(existing){
   });
 }
 
-function openProjektForm(existing){
+async function openProjektForm(existing){
   var d = existing || {};
   var kundeSel = '<option value="">— kein Kunde —</option>' + state.kunden.map(function(k){
     return '<option value="' + k.id + '"' + (d.kunde_id === k.id || (d.kunden && d.kunden.id === k.id) ? " selected" : "") + '>' + escapeHtml(k.name) + ' (' + escapeHtml(k.email) + ')</option>';
@@ -554,8 +641,13 @@ function openProjektForm(existing){
   var partnerSel = '<option value="">— kein Montage-Partner —</option>' + state.partner.map(function(p){
     return '<option value="' + p.id + '"' + (d.montage_partner_id === p.id || (d.montage_partner && d.montage_partner.id === p.id) ? " selected" : "") + '>' + escapeHtml(p.name) + ' (' + escapeHtml(p.typ) + ')</option>';
   }).join("");
+
+  var positionenBlock = existing
+    ? '<div class="field"><label>Bestellte Geräte</label><div id="positionsHost"></div></div>'
+    : '<p class="cell-sub" style="margin:0 0 14px;">Bestellte Geräte lassen sich hinzufügen, sobald das Projekt einmal gespeichert ist — dafür Speichern klicken, dann erneut „Bearbeiten“.</p>';
+
   document.getElementById("modalRoot").innerHTML =
-    '<div class="modal-backdrop" id="modalBackdrop"><div class="modal">' +
+    '<div class="modal-backdrop" id="modalBackdrop"><div class="modal" style="max-width:600px;">' +
       '<h2>' + (existing ? "Projekt bearbeiten" : "Projekt anlegen") + '</h2>' +
       '<form id="entityForm">' +
         '<div class="field"><label>Kunde</label><select name="kunde_id">' + kundeSel + '</select></div>' +
@@ -565,6 +657,7 @@ function openProjektForm(existing){
         '<div class="field"><label>Zuständig (intern)</label><input name="zustaendig" value="' + escapeHtml(d.zustaendig) + '"></div></div>' +
         '<div class="field"><label>Montage-Partner</label><select name="montage_partner_id">' + partnerSel + '</select></div>' +
         '<div class="field"><label>Notizen</label><textarea name="notizen">' + escapeHtml(d.notizen) + '</textarea></div>' +
+        positionenBlock +
         '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Abbrechen</button><button type="submit" class="btn">Speichern</button></div>' +
       '</form></div></div>';
   bindFormClose();
@@ -575,6 +668,65 @@ function openProjektForm(existing){
     try{ await saveProjekt(payload, existing ? existing.id : null); toast(existing ? "Projekt aktualisiert." : "Projekt angelegt."); closeForm(); await loadAll(); }
     catch(err){ toast("Fehler beim Speichern: " + err.message); }
   });
+
+  if(existing) await refreshPositionsHost(existing.id);
+}
+
+async function refreshPositionsHost(projektId){
+  var host = document.getElementById("positionsHost");
+  if(!host) return;
+  var positionen;
+  try{ positionen = await loadPositionen(projektId); }
+  catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
+
+  var geraetSel = '<option value="">Gerät wählen …</option>' + state.geraete.map(function(g){
+    return '<option value="' + g.id + '" data-preis="' + (g.preis == null ? "" : g.preis) + '">' + escapeHtml(g.kategorie) + ' — ' + escapeHtml(g.modell) + ' (' + (TIER_LABELS[g.tier] || g.tier) + ', ' + formatEuro(g.preis) + ')</option>';
+  }).join("");
+
+  var summe = positionen.reduce(function(sum, p){ return sum + (p.menge || 0) * (p.einzelpreis || 0); }, 0);
+
+  var rows = positionen.length
+    ? positionen.map(function(p){
+        var g = p.geraete;
+        return '<tr>' +
+          '<td>' + (g ? escapeHtml(g.kategorie) + ' — ' + escapeHtml(g.modell) : '<span class="cell-sub">Gerät gelöscht</span>') + (g && g.hersteller ? '<div class="cell-sub">' + escapeHtml(g.hersteller.name) + '</div>' : '') + '</td>' +
+          '<td>' + p.menge + '</td>' +
+          '<td>' + formatEuro(p.einzelpreis) + '</td>' +
+          '<td>' + formatEuro((p.menge || 0) * (p.einzelpreis || 0)) + '</td>' +
+          '<td><button type="button" class="btn btn-danger btn-sm" data-pos-delete="' + p.id + '">×</button></td></tr>';
+      }).join("")
+    : '<tr><td colspan="5" class="cell-sub">Noch keine Geräte zu diesem Projekt hinzugefügt.</td></tr>';
+
+  host.innerHTML =
+    '<table style="margin-bottom:10px;"><thead><tr><th>Gerät</th><th>Menge</th><th>Einzelpreis</th><th>Summe</th><th></th></tr></thead><tbody>' + rows + '</tbody>' +
+    (positionen.length ? '<tfoot><tr><td colspan="3" style="text-align:right;font-weight:700;">Gesamt</td><td style="font-weight:700;">' + formatEuro(summe) + '</td><td></td></tr></tfoot>' : '') +
+    '</table>' +
+    '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">' +
+      '<select id="posGeraetSel" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' + geraetSel + '</select>' +
+      '<input type="number" id="posMenge" value="1" min="1" style="width:70px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      '<button type="button" class="btn btn-ghost btn-sm" id="posAddBtn">+ Hinzufügen</button>' +
+    '</div>';
+
+  host.querySelectorAll("[data-pos-delete]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await deletePosition(btn.dataset.posDelete); await refreshPositionsHost(projektId); }
+      catch(err){ toast("Fehler beim Löschen: " + err.message); }
+    });
+  });
+  var addBtn = document.getElementById("posAddBtn");
+  if(addBtn){
+    addBtn.addEventListener("click", async function(){
+      var sel = document.getElementById("posGeraetSel");
+      var geraetId = sel.value;
+      if(!geraetId){ toast("Bitte ein Gerät auswählen."); return; }
+      var menge = parseInt(document.getElementById("posMenge").value, 10) || 1;
+      var preis = sel.selectedOptions[0].dataset.preis;
+      try{
+        await addPosition(projektId, geraetId, menge, preis === "" ? null : Number(preis));
+        await refreshPositionsHost(projektId);
+      }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+    });
+  }
 }
 
 /* ---------- Wiring ---------- */
