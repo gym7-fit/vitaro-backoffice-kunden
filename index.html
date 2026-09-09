@@ -57,8 +57,8 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;}
 .field input,.field select,.field textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);}
 .field textarea{min-height:70px;resize:vertical;font-family:inherit;}
 .err{color:var(--crit);font-size:.8rem;margin:-4px 0 14px;}
-.tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line);}
-.tabs button{background:none;border:none;padding:10px 16px;font-size:.86rem;font-weight:700;color:var(--ink-dim);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}
+.tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line);overflow-x:auto;-webkit-overflow-scrolling:touch;}
+.tabs button{background:none;border:none;padding:10px 16px;font-size:.86rem;font-weight:700;color:var(--ink-dim);cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap;flex:0 0 auto;}
 .tabs button.active{color:var(--ink);border-bottom-color:var(--brass);}
 .tabs .count{margin-left:6px;font-size:.68rem;font-weight:700;background:var(--brass-bg);color:var(--brass);padding:1px 7px;border-radius:10px;}
 .toolbar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;}
@@ -698,11 +698,12 @@ async function refreshPositionsHost(projektId){
     : '<tr><td colspan="5" class="cell-sub">Noch keine Geräte zu diesem Projekt hinzugefügt.</td></tr>';
 
   host.innerHTML =
-    '<table style="margin-bottom:10px;"><thead><tr><th>Gerät</th><th>Menge</th><th>Einzelpreis</th><th>Summe</th><th></th></tr></thead><tbody>' + rows + '</tbody>' +
+    '<div class="table-wrap" style="margin-bottom:10px;border:1px solid var(--line);border-radius:6px;">' +
+    '<table><thead><tr><th>Gerät</th><th>Menge</th><th>Einzelpreis</th><th>Summe</th><th></th></tr></thead><tbody>' + rows + '</tbody>' +
     (positionen.length ? '<tfoot><tr><td colspan="3" style="text-align:right;font-weight:700;">Gesamt</td><td style="font-weight:700;">' + formatEuro(summe) + '</td><td></td></tr></tfoot>' : '') +
-    '</table>' +
-    '<div style="display:flex;gap:8px;align-items:flex-end;flex-wrap:wrap;">' +
-      '<select id="posGeraetSel" style="flex:1;min-width:220px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' + geraetSel + '</select>' +
+    '</table></div>' +
+    '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
+      '<select id="posGeraetSel" style="flex:1 1 200px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' + geraetSel + '</select>' +
       '<input type="number" id="posMenge" value="1" min="1" style="width:70px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<button type="button" class="btn btn-ghost btn-sm" id="posAddBtn">+ Hinzufügen</button>' +
     '</div>';
