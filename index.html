@@ -109,6 +109,17 @@ a.link:hover{text-decoration:underline;}
       <p class="err" id="loginError" hidden></p>
       <button type="submit" class="btn" style="width:100%;">Anmelden</button>
     </form>
+    <p style="text-align:center;margin:14px 0 0;"><a href="#" class="backlink" id="forgotLink">Passwort vergessen?</a></p>
+  </div>
+
+  <div id="recoveryView" class="card login-card" hidden>
+    <h1>Neues Passwort setzen</h1>
+    <p>Bitte ein neues Passwort für Ihren Backoffice-Zugang vergeben.</p>
+    <form id="recoveryForm">
+      <div class="field"><label>Neues Passwort</label><input type="password" name="password" required minlength="8" autocomplete="new-password"></div>
+      <p class="err" id="recoveryError" hidden></p>
+      <button type="submit" class="btn" style="width:100%;">Passwort speichern</button>
+    </form>
   </div>
 
   <div id="appView" hidden>
@@ -128,9 +139,11 @@ a.link:hover{text-decoration:underline;}
       <button data-tab="montage_partner">Montage-Partner <span class="count" id="countPartner"></span></button>
       <button data-tab="projekte">Projekte <span class="count" id="countProjekte"></span></button>
       <button data-tab="datenabgleich">Datenabgleich</button>
+      <button data-tab="team" id="teamTabBtn" hidden>Team</button>
     </div>
 
     <div id="dashboardHost" hidden></div>
+    <div id="teamHost" hidden></div>
     <div id="syncHost" hidden></div>
 
     <div class="toolbar" id="toolbar" hidden>
@@ -155,6 +168,21 @@ var SUPABASE_URL = "https://xgkujmwcumcpibfkvmnr.supabase.co";
 var SUPABASE_ANON_KEY = "sb_publishable_wVMpntBaoBl05u7-x5EySA_JJQg2A-m";
 var SESSION_KEY = "vitaroKundenSession";
 
+/* ---------- Passwort-Reset: Recovery-Link aus dem URL-Hash lesen ---------- */
+function parseHashParams(){
+  var h = location.hash.replace(/^#/, "");
+  var params = {};
+  h.split("&").forEach(function(kv){
+    var parts = kv.split("=");
+    if(parts[0]) params[decodeURIComponent(parts[0])] = decodeURIComponent(parts[1] || "");
+  });
+  return params;
+}
+var _recovery = (function(){
+  var params = parseHashParams();
+  return (params.type === "recovery" && params.access_token) ? params : null;
+})();
+
 var STATUS_OPTIONS = ["Interessent","Erstgespräch vereinbart","Angebot erstellt","Kunde","Projekt abgeschlossen"];
 var PAKET_OPTIONS = ["","Essential","Signature","Maßgeschneidert"];
 var QUELLE_OPTIONS = ["Planer-Registrierung","Kontaktformular","Direktakquise","Sonstige"];
@@ -162,7 +190,15 @@ var PROJEKT_STATUS_OPTIONS = ["Angebot","Beauftragt","In Umsetzung","Abgeschloss
 var STATUS_PILL = {"Kunde":"ok","Projekt abgeschlossen":"ok","Angebot erstellt":"warn","Erstgespräch vereinbart":"warn","Interessent":"neutral","Abgeschlossen":"ok","In Umsetzung":"warn","Beauftragt":"warn","Angebot":"neutral"};
 
 var TIER_LABELS = { budget:"Einstieg", premium:"Premium" };
-var state = { session: null, tab: "dashboard", search: "", sortField: null, sortDir: 1, showArchived: false, kunden: [], hersteller: [], geraete: [], partner: [], projekte: [] };
+var state = { session: null, rolle: null, tab: "dashboard", search: "", sortField: null, sortDir: 1, showArchived: false, kunden: [], hersteller: [], geraete: [], partner: [], projekte: [], team: [] };
+/* Rollen-Einschraenkungen sind aktuell nur UI-seitig (Buttons ausgeblendet).
+   Echte Durchsetzung braucht zusaetzliche RLS-Policies auf den bestehenden
+   Tabellen -- folgt als eigener Schritt, sobald die vorhandenen Policies
+   bekannt sind (siehe Rueckmeldung dazu). */
+var CATALOG_TABS = ["hersteller", "geraete"];
+function canManageCurrentTab(){
+  return state.rolle === "owner" || CATALOG_TABS.indexOf(state.tab) === -1;
+}
 
 /* ---------- Sortierung + CSV-Export: Feld-Zugriffe je Tab ---------- */
 function fld(v){ return v == null ? "" : v; }
@@ -274,10 +310,39 @@ async function api(path, opts, _retried){
   }
   return res;
 }
+var STORAGE_BUCKET = "projekt-anhaenge";
+async function storageUpload(path, file){
+  var res = await fetch(SUPABASE_URL + "/storage/v1/object/" + STORAGE_BUCKET + "/" + path, {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + (state.session ? state.session.access_token : SUPABASE_ANON_KEY),
+      "Content-Type": file.type || "application/octet-stream"
+    },
+    body: file
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function storageDownload(path){
+  var res = await fetch(SUPABASE_URL + "/storage/v1/object/" + STORAGE_BUCKET + "/" + path, {
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + (state.session ? state.session.access_token : SUPABASE_ANON_KEY) }
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.blob();
+}
+async function storageDelete(path){
+  var res = await fetch(SUPABASE_URL + "/storage/v1/object/" + STORAGE_BUCKET + "/" + path, {
+    method: "DELETE",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + (state.session ? state.session.access_token : SUPABASE_ANON_KEY) }
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
 
 /* ---------- Laden ---------- */
 async function loadAll(){
+  state.rolle = await loadMyRole();
   await Promise.all([loadKunden(), loadHersteller(), loadGeraete(), loadPartner(), loadProjekte()]);
+  renderShell();
   renderTabs();
   renderActiveTab();
 }
@@ -309,6 +374,7 @@ function exportCsv(){
 function renderActiveTab(){
   if(state.tab === "dashboard") renderDashboard();
   else if(state.tab === "datenabgleich") renderSyncCheck();
+  else if(state.tab === "team") renderTeam();
   else renderTable();
 }
 
@@ -438,6 +504,88 @@ async function deletePosition(id){
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
 
+/* ---------- Termine ---------- */
+async function loadTermine(projektId){
+  var res = await api("/termine?projekt_id=eq." + encodeURIComponent(projektId) + "&select=*&order=datum.asc");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function addTermin(projektId, titel, datumIso, ort, notizen){
+  var res = await api("/termine", {
+    method:"POST", headers:{"Prefer":"return=minimal"},
+    body: JSON.stringify({ projekt_id: projektId, titel: titel, datum: datumIso, ort: ort || null, notizen: notizen || null })
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function deleteTermin(id){
+  var res = await api("/termine?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
+/* ---------- Aufgaben ---------- */
+async function loadAufgaben(projektId){
+  var res = await api("/aufgaben?projekt_id=eq." + encodeURIComponent(projektId) + "&select=*&order=erledigt.asc,faellig_am.asc.nullslast");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function addAufgabe(projektId, titel, faelligAm){
+  var res = await api("/aufgaben", {
+    method:"POST", headers:{"Prefer":"return=minimal"},
+    body: JSON.stringify({ projekt_id: projektId, titel: titel, faellig_am: faelligAm || null })
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function toggleAufgabe(id, erledigt){
+  var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ erledigt: erledigt }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function deleteAufgabe(id){
+  var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
+/* ---------- Projekt-Dateien ---------- */
+async function loadDateien(projektId){
+  var res = await api("/projekt_dateien?projekt_id=eq." + encodeURIComponent(projektId) + "&select=*&order=hochgeladen_am.desc");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function addDateiRecord(projektId, dateiname, storagePath, groesse){
+  var res = await api("/projekt_dateien", {
+    method:"POST", headers:{"Prefer":"return=minimal"},
+    body: JSON.stringify({ projekt_id: projektId, dateiname: dateiname, storage_path: storagePath, groesse: groesse, hochgeladen_von: state.session ? state.session.email : null })
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function deleteDateiRecord(id){
+  var res = await api("/projekt_dateien?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
+/* ---------- Team / Rollen ---------- */
+async function loadMyRole(){
+  if(!state.session) return null;
+  try{
+    var res = await api("/team_mitglieder?email=eq." + encodeURIComponent(state.session.email) + "&select=rolle");
+    if(!res.ok) return "mitarbeiter";
+    var rows = await res.json();
+    return rows.length ? rows[0].rolle : "mitarbeiter";
+  }catch(e){ return "mitarbeiter"; }
+}
+async function loadTeam(){
+  var res = await api("/team_mitglieder?select=*&order=erstellt_am.asc");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function addTeamMitglied(email, rolle){
+  var res = await api("/team_mitglieder", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ email: email, rolle: rolle }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function removeTeamMitglied(id){
+  var res = await api("/team_mitglieder?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+
 async function savePartner(payload, id){
   var res = id
     ? await api("/montage_partner?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) })
@@ -462,10 +610,12 @@ async function saveProjekt(payload, id){
 /* ---------- Rendering: Shell/Tabs ---------- */
 function renderShell(){
   var logged = !!state.session;
-  document.getElementById("loginView").hidden = logged;
-  document.getElementById("appView").hidden = !logged;
+  var recovering = !!_recovery;
+  document.getElementById("recoveryView").hidden = !recovering;
+  document.getElementById("loginView").hidden = logged || recovering;
+  document.getElementById("appView").hidden = !logged || recovering;
   if(logged){
-    document.getElementById("whoami").textContent = state.session.email;
+    document.getElementById("whoami").textContent = state.session.email + (state.rolle ? " (" + (state.rolle === "owner" ? "Owner" : "Mitarbeiter") + ")" : "");
   }
 }
 var TAB_LABELS = { kunden:"Kunde", hersteller:"Hersteller", geraete:"Gerät", montage_partner:"Montage-Partner", projekte:"Projekt" };
@@ -481,15 +631,17 @@ function renderTabs(){
   document.querySelectorAll("#tabs button").forEach(function(btn){
     btn.classList.toggle("active", btn.dataset.tab === state.tab);
   });
+  document.getElementById("teamTabBtn").hidden = state.rolle !== "owner";
   var isRowTab = ROW_TABS.indexOf(state.tab) !== -1;
   document.getElementById("toolbar").hidden = !isRowTab;
   document.getElementById("tableCard").hidden = !isRowTab;
   document.getElementById("dashboardHost").hidden = state.tab !== "dashboard";
   document.getElementById("syncHost").hidden = state.tab !== "datenabgleich";
+  document.getElementById("teamHost").hidden = state.tab !== "team";
   if(isRowTab){
     var addBtn = document.getElementById("addBtn");
     addBtn.textContent = "+ " + TAB_LABELS[state.tab] + (state.tab === "kunden" ? " manuell anlegen" : " anlegen");
-    addBtn.hidden = state.showArchived;
+    addBtn.hidden = state.showArchived || !canManageCurrentTab();
     document.getElementById("trashToggleBtn").textContent = state.showArchived ? "← Zurück zur Liste" : "🗑 Papierkorb";
     document.getElementById("exportBtn").hidden = state.showArchived;
   }
@@ -744,6 +896,55 @@ function renderDashboard(){
   document.getElementById("dashRefreshBtn").addEventListener("click", loadAll);
 }
 
+/* ---------- Team / Rollen (nur fuer Owner sichtbar) ---------- */
+async function renderTeam(){
+  var host = document.getElementById("teamHost");
+  host.innerHTML = '<p class="cell-sub">Lade Team …</p>';
+  var team;
+  try{ team = await loadTeam(); }
+  catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
+  state.team = team;
+
+  var rows = team.length
+    ? team.map(function(m){
+        var self = state.session && state.session.email === m.email;
+        return '<tr><td>' + escapeHtml(m.email) + (self ? ' <span class="cell-sub">(du)</span>' : '') + '</td>' +
+          '<td><span class="pill pill-' + (m.rolle === "owner" ? "ok" : "neutral") + '">' + (m.rolle === "owner" ? "Owner" : "Mitarbeiter") + '</span></td>' +
+          '<td class="cell-sub">' + formatDate(m.erstellt_am) + '</td>' +
+          '<td>' + (self ? "" : '<button type="button" class="btn btn-danger btn-sm" data-team-remove="' + m.id + '">Entfernen</button>') + '</td></tr>';
+      }).join("")
+    : '<tr><td colspan="4" class="cell-sub">Noch niemand erfasst.</td></tr>';
+
+  host.innerHTML =
+    '<div class="card" style="padding:16px 20px;margin-bottom:14px;color:var(--ink-dim);font-size:.84rem;">' +
+      'Owner haben vollen Zugriff (inkl. Hersteller-/Geräte-Katalog und endgültigem Löschen aus dem Papierkorb). Mitarbeiter sehen alles, können den Katalog aber nicht ändern und nichts endgültig löschen. ' +
+      '<b>Hinweis:</b> das ist aktuell eine UI-Einschränkung, keine serverseitige Berechtigung — für echten Schutz vor absichtlicher Umgehung braucht es noch passende Datenbank-Regeln.' +
+    '</div>' +
+    '<div class="card table-wrap" style="margin-bottom:16px;"><table><thead><tr><th>E-Mail</th><th>Rolle</th><th>Hinzugefügt</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div class="card" style="padding:16px 20px;">' +
+      '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;">' +
+        '<input type="email" id="teamEmail" placeholder="E-Mail (muss bereits einen Backoffice-Login haben)" style="flex:1 1 240px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+        '<select id="teamRolle" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);"><option value="mitarbeiter">Mitarbeiter</option><option value="owner">Owner</option></select>' +
+        '<button type="button" class="btn btn-sm" id="teamAddBtn">+ Hinzufügen</button>' +
+      '</div>' +
+    '</div>';
+
+  host.querySelectorAll("[data-team-remove]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      if(!confirm("Diese Person wirklich aus dem Team entfernen? (Der Login selbst bleibt bestehen, nur die Rolle hier wird entfernt.)")) return;
+      try{ await removeTeamMitglied(btn.dataset.teamRemove); await renderTeam(); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  document.getElementById("teamAddBtn").addEventListener("click", async function(){
+    var emailEl = document.getElementById("teamEmail"), rolleEl = document.getElementById("teamRolle");
+    var email = emailEl.value.trim();
+    if(!email){ toast("Bitte eine E-Mail angeben."); return; }
+    try{ await addTeamMitglied(email, rolleEl.value); toast("Hinzugefügt."); await renderTeam(); }
+    catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+  });
+}
+
 function renderTable(){
   var rows = currentRows();
   var total = rowsForTab(state.tab).length;
@@ -769,7 +970,11 @@ function renderTable(){
 
 function rowActionsCell(id){
   if(state.showArchived){
-    return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-restore="' + id + '">Wiederherstellen</button><button class="btn btn-danger btn-sm" data-purge="' + id + '">Endgültig löschen</button></div></td></tr>';
+    var purgeBtn = state.rolle === "owner" ? '<button class="btn btn-danger btn-sm" data-purge="' + id + '">Endgültig löschen</button>' : "";
+    return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-restore="' + id + '">Wiederherstellen</button>' + purgeBtn + '</div></td></tr>';
+  }
+  if(!canManageCurrentTab()){
+    return '<td><span class="cell-sub">Nur für Owner bearbeitbar</span></td></tr>';
   }
   return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + id + '">Archivieren</button></div></td></tr>';
 }
@@ -1060,8 +1265,11 @@ async function openProjektForm(existing){
 
   var positionenBlock = existing
     ? '<div class="field"><label>Bestellte Geräte</label><div id="positionsHost"></div></div>'
-    : '<p class="cell-sub" style="margin:0 0 14px;">Bestellte Geräte lassen sich hinzufügen, sobald das Projekt einmal gespeichert ist — dafür Speichern klicken, dann erneut „Bearbeiten“.</p>';
+    : '<p class="cell-sub" style="margin:0 0 14px;">Bestellte Geräte, Termine, Aufgaben und Dateien lassen sich hinzufügen, sobald das Projekt einmal gespeichert ist — dafür Speichern klicken, dann erneut „Bearbeiten“.</p>';
   var historyBlock = existing ? '<div class="field"><label>Statusverlauf</label><div id="statusHistoryHost"></div></div>' : '';
+  var termineBlock = existing ? '<div class="field"><label>Termine</label><div id="termineHost"></div></div>' : '';
+  var aufgabenBlock = existing ? '<div class="field"><label>Aufgaben</label><div id="aufgabenHost"></div></div>' : '';
+  var dateienBlock = existing ? '<div class="field"><label>Dateien</label><div id="dateienHost"></div></div>' : '';
 
   document.getElementById("modalRoot").innerHTML =
     '<div class="modal-backdrop" id="modalBackdrop"><div class="modal" style="max-width:600px;">' +
@@ -1075,6 +1283,9 @@ async function openProjektForm(existing){
         '<div class="field"><label>Montage-Partner</label><select name="montage_partner_id">' + partnerSel + '</select></div>' +
         '<div class="field"><label>Notizen</label><textarea name="notizen">' + escapeHtml(d.notizen) + '</textarea></div>' +
         positionenBlock +
+        termineBlock +
+        aufgabenBlock +
+        dateienBlock +
         historyBlock +
         '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Abbrechen</button><button type="submit" class="btn">Speichern</button></div>' +
       '</form></div></div>';
@@ -1091,7 +1302,13 @@ async function openProjektForm(existing){
     }catch(err){ toast("Fehler beim Speichern: " + err.message); }
   });
 
-  if(existing){ await refreshPositionsHost(existing.id); renderStatusHistoryInto(document.getElementById("statusHistoryHost"), "projekte", existing.id); }
+  if(existing){
+    await refreshPositionsHost(existing.id);
+    renderStatusHistoryInto(document.getElementById("statusHistoryHost"), "projekte", existing.id);
+    await refreshTermineHost(existing.id);
+    await refreshAufgabenHost(existing.id);
+    await refreshDateienHost(existing.id);
+  }
 }
 
 async function refreshPositionsHost(projektId){
@@ -1152,6 +1369,165 @@ async function refreshPositionsHost(projektId){
   }
 }
 
+/* ---------- Termine/Aufgaben/Dateien im Projekt-Dialog ---------- */
+async function refreshTermineHost(projektId){
+  var host = document.getElementById("termineHost");
+  if(!host) return;
+  var termine;
+  try{ termine = await loadTermine(projektId); }
+  catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
+
+  var rows = termine.length
+    ? termine.map(function(t){
+        return '<tr><td>' + formatDateTime(t.datum) + '</td><td>' + escapeHtml(t.titel) + (t.ort ? '<div class="cell-sub">' + escapeHtml(t.ort) + '</div>' : '') + '</td>' +
+          '<td><button type="button" class="btn btn-danger btn-sm" data-termin-delete="' + t.id + '">×</button></td></tr>';
+      }).join("")
+    : '<tr><td colspan="3" class="cell-sub">Keine Termine.</td></tr>';
+
+  host.innerHTML =
+    '<div class="table-wrap" style="margin-bottom:10px;border:1px solid var(--line);border-radius:6px;"><table><thead><tr><th>Wann</th><th>Titel / Ort</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
+      '<input type="datetime-local" id="terminDatum" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      '<input type="text" id="terminTitel" placeholder="Titel" style="flex:1 1 140px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      '<input type="text" id="terminOrt" placeholder="Ort (optional)" style="flex:1 1 120px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      '<button type="button" class="btn btn-ghost btn-sm" id="terminAddBtn">+ Termin</button>' +
+    '</div>';
+
+  host.querySelectorAll("[data-termin-delete]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await deleteTermin(btn.dataset.terminDelete); await refreshTermineHost(projektId); }
+      catch(err){ toast("Fehler beim Löschen: " + err.message); }
+    });
+  });
+  document.getElementById("terminAddBtn").addEventListener("click", async function(){
+    var datumEl = document.getElementById("terminDatum"), titelEl = document.getElementById("terminTitel"), ortEl = document.getElementById("terminOrt");
+    if(!datumEl.value || !titelEl.value.trim()){ toast("Bitte Datum und Titel angeben."); return; }
+    try{
+      await addTermin(projektId, titelEl.value.trim(), new Date(datumEl.value).toISOString(), ortEl.value.trim());
+      await refreshTermineHost(projektId);
+    }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+  });
+}
+
+async function refreshAufgabenHost(projektId){
+  var host = document.getElementById("aufgabenHost");
+  if(!host) return;
+  var aufgaben;
+  try{ aufgaben = await loadAufgaben(projektId); }
+  catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
+
+  var rows = aufgaben.length
+    ? aufgaben.map(function(a){
+        return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);">' +
+          '<input type="checkbox" data-aufgabe-toggle="' + a.id + '"' + (a.erledigt ? " checked" : "") + '>' +
+          '<span style="flex:1;' + (a.erledigt ? "text-decoration:line-through;color:var(--ink-dim);" : "") + '">' + escapeHtml(a.titel) + '</span>' +
+          (a.faellig_am ? '<span class="cell-sub">' + formatDate(a.faellig_am) + '</span>' : '') +
+          '<button type="button" class="btn btn-danger btn-sm" data-aufgabe-delete="' + a.id + '">×</button></li>';
+      }).join("")
+    : '<li class="cell-sub">Keine Aufgaben.</li>';
+
+  host.innerHTML =
+    '<ul style="list-style:none;margin:0 0 10px;padding:0;">' + rows + '</ul>' +
+    '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
+      '<input type="text" id="aufgabeTitel" placeholder="Neue Aufgabe" style="flex:1 1 160px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      '<input type="date" id="aufgabeFaellig" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      '<button type="button" class="btn btn-ghost btn-sm" id="aufgabeAddBtn">+ Aufgabe</button>' +
+    '</div>';
+
+  host.querySelectorAll("[data-aufgabe-toggle]").forEach(function(cb){
+    cb.addEventListener("change", async function(){
+      try{ await toggleAufgabe(cb.dataset.aufgabeToggle, cb.checked); await refreshAufgabenHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-aufgabe-delete]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await deleteAufgabe(btn.dataset.aufgabeDelete); await refreshAufgabenHost(projektId); }
+      catch(err){ toast("Fehler beim Löschen: " + err.message); }
+    });
+  });
+  document.getElementById("aufgabeAddBtn").addEventListener("click", async function(){
+    var titelEl = document.getElementById("aufgabeTitel"), faelligEl = document.getElementById("aufgabeFaellig");
+    if(!titelEl.value.trim()){ toast("Bitte einen Titel angeben."); return; }
+    try{
+      await addAufgabe(projektId, titelEl.value.trim(), faelligEl.value || null);
+      await refreshAufgabenHost(projektId);
+    }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+  });
+}
+
+async function refreshDateienHost(projektId){
+  var host = document.getElementById("dateienHost");
+  if(!host) return;
+  var dateien;
+  try{ dateien = await loadDateien(projektId); }
+  catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
+
+  function formatSize(n){
+    if(n == null) return "";
+    if(n < 1024) return n + " B";
+    if(n < 1024 * 1024) return Math.round(n / 1024) + " KB";
+    return (n / 1024 / 1024).toFixed(1) + " MB";
+  }
+  var byId = {}; dateien.forEach(function(f){ byId[f.id] = f; });
+
+  var rows = dateien.length
+    ? dateien.map(function(f){
+        return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);">' +
+          '<span style="flex:1;">' + escapeHtml(f.dateiname) + '</span>' +
+          '<span class="cell-sub">' + formatSize(f.groesse) + ' · ' + formatDate(f.hochgeladen_am) + '</span>' +
+          '<button type="button" class="btn btn-ghost btn-sm" data-datei-download="' + f.id + '">↓</button>' +
+          '<button type="button" class="btn btn-danger btn-sm" data-datei-delete="' + f.id + '">×</button></li>';
+      }).join("")
+    : '<li class="cell-sub">Keine Dateien.</li>';
+
+  host.innerHTML =
+    '<ul style="list-style:none;margin:0 0 10px;padding:0;">' + rows + '</ul>' +
+    '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
+      '<input type="file" id="dateiInput" style="flex:1 1 200px;min-width:0;">' +
+      '<button type="button" class="btn btn-ghost btn-sm" id="dateiUploadBtn">Hochladen</button>' +
+    '</div>';
+
+  host.querySelectorAll("[data-datei-download]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      var f = byId[btn.dataset.dateiDownload];
+      btn.disabled = true;
+      try{
+        var blob = await storageDownload(f.storage_path);
+        var url = URL.createObjectURL(blob);
+        var a = document.createElement("a"); a.href = url; a.download = f.dateiname;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+      }catch(err){ toast("Fehler beim Herunterladen: " + err.message); }
+      btn.disabled = false;
+    });
+  });
+  host.querySelectorAll("[data-datei-delete]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      var f = byId[btn.dataset.dateiDelete];
+      if(!confirm('"' + f.dateiname + '" wirklich löschen?')) return;
+      try{
+        await storageDelete(f.storage_path);
+        await deleteDateiRecord(f.id);
+        await refreshDateienHost(projektId);
+      }catch(err){ toast("Fehler beim Löschen: " + err.message); }
+    });
+  });
+  document.getElementById("dateiUploadBtn").addEventListener("click", async function(){
+    var input = document.getElementById("dateiInput");
+    var file = input.files[0];
+    if(!file){ toast("Bitte eine Datei auswählen."); return; }
+    var btn = document.getElementById("dateiUploadBtn");
+    btn.disabled = true; btn.textContent = "Lädt hoch …";
+    try{
+      var path = projektId + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+      await storageUpload(path, file);
+      await addDateiRecord(projektId, file.name, path, file.size);
+      await refreshDateienHost(projektId);
+    }catch(err){ toast("Fehler beim Hochladen: " + err.message); btn.disabled = false; btn.textContent = "Hochladen"; }
+  });
+}
+
 /* ---------- Wiring ---------- */
 document.getElementById("loginForm").addEventListener("submit", async function(e){
   e.preventDefault();
@@ -1171,6 +1547,42 @@ document.getElementById("loginForm").addEventListener("submit", async function(e
   btn.disabled = false; btn.textContent = "Anmelden";
 });
 document.getElementById("logoutBtn").addEventListener("click", logout);
+document.getElementById("forgotLink").addEventListener("click", async function(e){
+  e.preventDefault();
+  var email = prompt("Für welche E-Mail soll ein Link zum Zurücksetzen des Passworts verschickt werden?");
+  if(!email) return;
+  try{
+    var res = await fetch(SUPABASE_URL + "/auth/v1/recover?redirect_to=" + encodeURIComponent(location.origin + location.pathname), {
+      method: "POST",
+      headers: { "apikey": SUPABASE_ANON_KEY, "Content-Type": "application/json" },
+      body: JSON.stringify({ email: email.trim() })
+    });
+    if(!res.ok){ var data = await res.json().catch(function(){ return {}; }); throw new Error(data.msg || data.error_description || ("HTTP " + res.status)); }
+    alert("Falls diese E-Mail einen Zugang hat, wurde gerade ein Link zum Zurücksetzen verschickt. Bitte E-Mail-Postfach prüfen.");
+  }catch(err){ alert("Fehler: " + err.message); }
+});
+document.getElementById("recoveryForm").addEventListener("submit", async function(e){
+  e.preventDefault();
+  var f = e.target;
+  var errEl = document.getElementById("recoveryError");
+  errEl.hidden = true;
+  var btn = f.querySelector("button[type=submit]");
+  btn.disabled = true; btn.textContent = "Speichert …";
+  try{
+    var res = await fetch(SUPABASE_URL + "/auth/v1/user", {
+      method: "PUT",
+      headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + _recovery.access_token, "Content-Type": "application/json" },
+      body: JSON.stringify({ password: f.password.value })
+    });
+    var data = await res.json().catch(function(){ return {}; });
+    if(!res.ok) throw new Error(data.msg || data.error_description || ("HTTP " + res.status));
+    _recovery = null;
+    try{ history.replaceState(null, "", location.pathname); }catch(ex){}
+    renderShell();
+    alert("Passwort gespeichert. Bitte jetzt damit anmelden.");
+  }catch(err){ errEl.textContent = err.message; errEl.hidden = false; }
+  btn.disabled = false; btn.textContent = "Passwort speichern";
+});
 document.getElementById("linksBtn").addEventListener("click", openLinksModal);
 document.getElementById("addBtn").addEventListener("click", function(){ openForm(null); });
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
