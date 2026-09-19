@@ -138,6 +138,7 @@ a.link:hover{text-decoration:underline;}
       <button type="button" class="btn" id="addBtn">+ Neu</button>
       <button type="button" class="btn-ghost btn btn-sm" id="refreshBtn">Aktualisieren</button>
       <button type="button" class="btn-ghost btn btn-sm" id="exportBtn">Export CSV</button>
+      <button type="button" class="btn-ghost btn btn-sm" id="trashToggleBtn">🗑 Papierkorb</button>
       <span id="countLabel" style="margin-left:auto;color:var(--ink-dim);font-size:.8rem;"></span>
     </div>
     <div class="card table-wrap" id="tableCard" hidden>
@@ -161,7 +162,7 @@ var PROJEKT_STATUS_OPTIONS = ["Angebot","Beauftragt","In Umsetzung","Abgeschloss
 var STATUS_PILL = {"Kunde":"ok","Projekt abgeschlossen":"ok","Angebot erstellt":"warn","Erstgespräch vereinbart":"warn","Interessent":"neutral","Abgeschlossen":"ok","In Umsetzung":"warn","Beauftragt":"warn","Angebot":"neutral"};
 
 var TIER_LABELS = { budget:"Einstieg", premium:"Premium" };
-var state = { session: null, tab: "dashboard", search: "", sortField: null, sortDir: 1, kunden: [], hersteller: [], geraete: [], partner: [], projekte: [] };
+var state = { session: null, tab: "dashboard", search: "", sortField: null, sortDir: 1, showArchived: false, kunden: [], hersteller: [], geraete: [], partner: [], projekte: [] };
 
 /* ---------- Sortierung + CSV-Export: Feld-Zugriffe je Tab ---------- */
 function fld(v){ return v == null ? "" : v; }
@@ -170,7 +171,7 @@ var SORT_ACCESSORS = {
     name: function(r){ return fld(r.name); }, email: function(r){ return fld(r.email); },
     telefon: function(r){ return fld(r.telefon); }, quelle: function(r){ return fld(r.quelle); },
     status: function(r){ return fld(r.status); }, paket: function(r){ return fld(r.paket); },
-    registriertAm: function(r){ return fld(r.registriertAm); }
+    registriertAm: function(r){ return fld(r.registriertAm); }, letzteAktivitaet: function(r){ return fld(r.letzteAktivitaet); }
   },
   hersteller: {
     name: function(r){ return fld(r.name); }, kategorien: function(r){ return fld(r.kategorien); },
@@ -195,7 +196,7 @@ var SORT_ACCESSORS = {
   }
 };
 var CSV_FIELDS = {
-  kunden: [["Name","name"],["E-Mail","email"],["Telefon","telefon"],["Quelle","quelle"],["Status","status"],["Paket","paket"],["Registriert","registriertAm"],["Notizen","notizen"]],
+  kunden: [["Name","name"],["E-Mail","email"],["Telefon","telefon"],["Quelle","quelle"],["Status","status"],["Paket","paket"],["Registriert","registriertAm"],["Letzte Aktivität","letzteAktivitaet"],["DSGVO-Einwilligung am","dsgvoAm"],["DSGVO-Quelle","dsgvoQuelle"],["Notizen","notizen"]],
   hersteller: [["Name","name"],["Kategorien","kategorien"],["Website","website"],["Ansprechpartner","ansprechpartner"],["Kontakt","kontakt"],["Konditionen","konditionen"],["Liefert Montage",function(r){ return r.liefert_montage ? "Ja" : "Nein"; }],["Montage-Notiz","montage_notiz"]],
   geraete: [["Kategorie","kategorie"],["Stufe",function(r){ return TIER_LABELS[r.tier] || r.tier; }],["Modell","modell"],["Hersteller",function(r){ return r.hersteller ? r.hersteller.name : ""; }],["Preis","preis"],["Website","url"],["Beschreibung","blurb"]],
   montage_partner: [["Name","name"],["Typ","typ"],["Website","website"],["Leistung","leistung"],["PLZ-Bereich","plz_bereich"],["Gewerk","gewerk"],["Kontakt","kontakt"],["Quelle","quelle"],["Notiz","montage_notiz"]],
@@ -333,7 +334,9 @@ async function loadKunden(){
     if(!res.ok) throw new Error("HTTP " + res.status);
     state.kunden = (await res.json()).map(function(r){
       return { id:r.id, name:r.name, email:r.email, telefon:r.telefon, quelle:r.quelle, status:r.status,
-        paket:r.zugeordnetes_paket, notizen:r.notizen, registriertAm:r.registriert_am };
+        paket:r.zugeordnetes_paket, notizen:r.notizen, registriertAm:r.registriert_am,
+        letzteAktivitaet:r.letzte_aktivitaet, dsgvoAm:r.dsgvo_einwilligung_am, dsgvoQuelle:r.dsgvo_quelle,
+        archiviert: !!r.archiviert };
     });
   }catch(err){ toast("Fehler beim Laden der Kunden: " + err.message); }
 }
@@ -352,16 +355,56 @@ async function loadProjekte(){
   }catch(err){ toast("Fehler beim Laden der Projekte: " + err.message); }
 }
 
-/* ---------- Speichern/Löschen ---------- */
+/* ---------- Speichern/Archivieren ---------- */
+/* "Löschen" archiviert nur noch (archiviert=true) -- echtes Entfernen aus der
+   Datenbank geht nur noch aus dem Papierkorb heraus (purgeRow), siehe unten. */
+async function archiveRow(table, id){
+  var res = await api("/" + table + "?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: true }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function restoreRow(table, id){
+  var res = await api("/" + table + "?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: false }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function purgeRow(table, id){
+  var res = await api("/" + table + "?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function recordStatusChange(tabelle, datensatzId, altStatus, neuStatus){
+  if(!datensatzId || altStatus === neuStatus) return;
+  try{
+    await api("/status_verlauf", {
+      method: "POST", headers:{"Prefer":"return=minimal"},
+      body: JSON.stringify({ tabelle: tabelle, datensatz_id: datensatzId, alter_status: altStatus || null, neuer_status: neuStatus, geaendert_von: state.session ? state.session.email : null })
+    });
+  }catch(e){}
+}
+async function loadStatusHistory(tabelle, datensatzId){
+  var res = await api("/status_verlauf?tabelle=eq." + encodeURIComponent(tabelle) + "&datensatz_id=eq." + encodeURIComponent(datensatzId) + "&select=*&order=geaendert_am.desc");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function renderStatusHistoryInto(hostEl, tabelle, datensatzId){
+  hostEl.innerHTML = '<p class="cell-sub">Lade Verlauf …</p>';
+  try{
+    var rows = await loadStatusHistory(tabelle, datensatzId);
+    if(!rows.length){ hostEl.innerHTML = '<p class="cell-sub">Noch keine Statusänderung erfasst.</p>'; return; }
+    hostEl.innerHTML = '<ul style="list-style:none;margin:0;padding:0;">' +
+      rows.map(function(r){
+        return '<li style="padding:5px 0;border-bottom:1px solid var(--line);font-size:.8rem;">' +
+          (r.alter_status ? escapeHtml(r.alter_status) + ' → ' : '') + '<b>' + escapeHtml(r.neuer_status) + '</b>' +
+          '<div class="cell-sub">' + formatDateTime(r.geaendert_am) + (r.geaendert_von ? ' · ' + escapeHtml(r.geaendert_von) : '') + '</div></li>';
+      }).join("") + '</ul>';
+  }catch(err){ hostEl.innerHTML = '<p class="err">Fehler beim Laden des Verlaufs: ' + escapeHtml(err.message) + '</p>'; }
+}
 async function saveKunde(payload, id){
-  var body = { name: payload.name, email: payload.email, telefon: payload.telefon, quelle: payload.quelle, status: payload.status, zugeordnetes_paket: payload.paket, notizen: payload.notizen };
+  var body = {
+    name: payload.name, email: payload.email, telefon: payload.telefon, quelle: payload.quelle, status: payload.status,
+    zugeordnetes_paket: payload.paket, notizen: payload.notizen, letzte_aktivitaet: new Date().toISOString()
+  };
   var res = id
     ? await api("/kunden?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(body) })
     : await api("/kunden", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(body) });
-  if(!res.ok) throw new Error("HTTP " + res.status);
-}
-async function deleteKunde(id){
-  var res = await api("/kunden?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
 async function saveHersteller(payload, id){
@@ -370,18 +413,10 @@ async function saveHersteller(payload, id){
     : await api("/hersteller", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
-async function deleteHersteller(id){
-  var res = await api("/hersteller?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
-  if(!res.ok) throw new Error("HTTP " + res.status);
-}
 async function saveGeraet(payload, id){
   var res = id
     ? await api("/geraete?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) })
     : await api("/geraete", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) });
-  if(!res.ok) throw new Error("HTTP " + res.status);
-}
-async function deleteGeraet(id){
-  var res = await api("/geraete?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
 
@@ -409,10 +444,6 @@ async function savePartner(payload, id){
     : await api("/montage_partner", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(payload) });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
-async function deletePartner(id){
-  var res = await api("/montage_partner?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
-  if(!res.ok) throw new Error("HTTP " + res.status);
-}
 async function saveProjekt(payload, id){
   var body = {
     kunde_id: payload.kunde_id || null,
@@ -425,10 +456,6 @@ async function saveProjekt(payload, id){
   var res = id
     ? await api("/projekte?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(body) })
     : await api("/projekte", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify(body) });
-  if(!res.ok) throw new Error("HTTP " + res.status);
-}
-async function deleteProjekt(id){
-  var res = await api("/projekte?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
 
@@ -445,11 +472,12 @@ var TAB_LABELS = { kunden:"Kunde", hersteller:"Hersteller", geraete:"Gerät", mo
 var ROW_TABS = ["kunden","hersteller","geraete","montage_partner","projekte"];
 
 function renderTabs(){
-  document.getElementById("countKunden").textContent = state.kunden.length;
-  document.getElementById("countHersteller").textContent = state.hersteller.length;
-  document.getElementById("countGeraete").textContent = state.geraete.length;
-  document.getElementById("countPartner").textContent = state.partner.length;
-  document.getElementById("countProjekte").textContent = state.projekte.length;
+  function activeCount(arr){ return arr.filter(function(r){ return !r.archiviert; }).length; }
+  document.getElementById("countKunden").textContent = activeCount(state.kunden);
+  document.getElementById("countHersteller").textContent = activeCount(state.hersteller);
+  document.getElementById("countGeraete").textContent = activeCount(state.geraete);
+  document.getElementById("countPartner").textContent = activeCount(state.partner);
+  document.getElementById("countProjekte").textContent = activeCount(state.projekte);
   document.querySelectorAll("#tabs button").forEach(function(btn){
     btn.classList.toggle("active", btn.dataset.tab === state.tab);
   });
@@ -461,11 +489,18 @@ function renderTabs(){
   if(isRowTab){
     var addBtn = document.getElementById("addBtn");
     addBtn.textContent = "+ " + TAB_LABELS[state.tab] + (state.tab === "kunden" ? " manuell anlegen" : " anlegen");
+    addBtn.hidden = state.showArchived;
+    document.getElementById("trashToggleBtn").textContent = state.showArchived ? "← Zurück zur Liste" : "🗑 Papierkorb";
+    document.getElementById("exportBtn").hidden = state.showArchived;
   }
 }
 function formatDate(iso){
   if(!iso) return "—";
   try{ return new Date(iso).toLocaleDateString("de-DE", { day:"2-digit", month:"2-digit", year:"numeric" }); }catch(e){ return iso; }
+}
+function formatDateTime(iso){
+  if(!iso) return "—";
+  try{ return new Date(iso).toLocaleString("de-DE", { day:"2-digit", month:"2-digit", year:"numeric", hour:"2-digit", minute:"2-digit" }); }catch(e){ return iso; }
 }
 function formatEuro(n){
   if(n == null || n === "") return "—";
@@ -473,8 +508,11 @@ function formatEuro(n){
 }
 
 /* ---------- Rendering: Tabelle je Tab ---------- */
-function rowsForTab(tab){
+function allRowsForTab(tab){
   return tab === "kunden" ? state.kunden : tab === "hersteller" ? state.hersteller : tab === "geraete" ? state.geraete : tab === "montage_partner" ? state.partner : state.projekte;
+}
+function rowsForTab(tab){
+  return allRowsForTab(tab).filter(function(r){ return !!r.archiviert === state.showArchived; });
 }
 
 function currentRows(){
@@ -665,26 +703,35 @@ function statusBarRows(counts, order){
 }
 function renderDashboard(){
   var host = document.getElementById("dashboardHost");
-  var offeneProjekte = state.projekte.filter(function(p){ return p.status !== "Abgeschlossen"; }).length;
-  var summeLaufend = state.projekte.filter(function(p){ return p.status !== "Abgeschlossen"; })
+  var aktiveKunden = state.kunden.filter(function(k){ return !k.archiviert; });
+  var aktiveProjekte = state.projekte.filter(function(p){ return !p.archiviert; });
+  var offeneProjekte = aktiveProjekte.filter(function(p){ return p.status !== "Abgeschlossen"; }).length;
+  var summeLaufend = aktiveProjekte.filter(function(p){ return p.status !== "Abgeschlossen"; })
     .reduce(function(s, p){ return s + (Number(p.summe) || 0); }, 0);
   var seit7 = Date.now() - 7 * 24 * 60 * 60 * 1000;
-  var neueInteressenten = state.kunden.filter(function(k){
+  var seit14 = Date.now() - 14 * 24 * 60 * 60 * 1000;
+  var neueInteressenten = aktiveKunden.filter(function(k){
     return k.registriertAm && new Date(k.registriertAm).getTime() >= seit7;
+  }).length;
+  var kalt = aktiveKunden.filter(function(k){
+    if(k.status === "Kunde" || k.status === "Projekt abgeschlossen") return false;
+    var letzte = k.letzteAktivitaet || k.registriertAm;
+    return !letzte || new Date(letzte).getTime() < seit14;
   }).length;
 
   var kundenStatusCounts = {};
   STATUS_OPTIONS.forEach(function(s){ kundenStatusCounts[s] = 0; });
-  state.kunden.forEach(function(k){ var s = k.status || "Interessent"; kundenStatusCounts[s] = (kundenStatusCounts[s] || 0) + 1; });
+  aktiveKunden.forEach(function(k){ var s = k.status || "Interessent"; kundenStatusCounts[s] = (kundenStatusCounts[s] || 0) + 1; });
 
   var projektStatusCounts = {};
   PROJEKT_STATUS_OPTIONS.forEach(function(s){ projektStatusCounts[s] = 0; });
-  state.projekte.forEach(function(p){ var s = p.status || "Angebot"; projektStatusCounts[s] = (projektStatusCounts[s] || 0) + 1; });
+  aktiveProjekte.forEach(function(p){ var s = p.status || "Angebot"; projektStatusCounts[s] = (projektStatusCounts[s] || 0) + 1; });
 
   host.innerHTML =
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:14px;margin-bottom:22px;">' +
-      statTile("Kunden gesamt", state.kunden.length) +
+      statTile("Kunden gesamt", aktiveKunden.length) +
       statTile("Neue Interessenten (7 Tage)", neueInteressenten) +
+      statTile("Ohne Aktivität (14+ Tage)", kalt) +
       statTile("Offene Projekte", offeneProjekte) +
       statTile("Summe laufender Angebote", formatEuro(summeLaufend)) +
     '</div>' +
@@ -720,6 +767,12 @@ function renderTable(){
   wireSortHeaders();
 }
 
+function rowActionsCell(id){
+  if(state.showArchived){
+    return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-restore="' + id + '">Wiederherstellen</button><button class="btn btn-danger btn-sm" data-purge="' + id + '">Endgültig löschen</button></div></td></tr>';
+  }
+  return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + id + '">Archivieren</button></div></td></tr>';
+}
 function sortTh(label, field){
   var active = state.sortField === field;
   var arrow = active ? (state.sortDir === 1 ? " ▲" : " ▼") : "";
@@ -736,7 +789,7 @@ function wireSortHeaders(){
   });
 }
 function renderKundenTable(rows){
-  var html = '<table><thead><tr>' + sortTh("Name","name") + sortTh("E-Mail","email") + sortTh("Telefon","telefon") + sortTh("Quelle","quelle") + sortTh("Status","status") + sortTh("Paket","paket") + sortTh("Registriert","registriertAm") + '<th></th></tr></thead><tbody>';
+  var html = '<table><thead><tr>' + sortTh("Name","name") + sortTh("E-Mail","email") + sortTh("Telefon","telefon") + sortTh("Quelle","quelle") + sortTh("Status","status") + sortTh("Paket","paket") + sortTh("Registriert","registriertAm") + sortTh("Letzte Aktivität","letzteAktivitaet") + '<th></th></tr></thead><tbody>';
   rows.forEach(function(r){
     var cls = STATUS_PILL[r.status] || "neutral";
     html += '<tr>' +
@@ -744,7 +797,8 @@ function renderKundenTable(rows){
       '<td><span class="cell-sub">' + escapeHtml(r.quelle || "—") + '</span></td>' +
       '<td><span class="pill pill-' + cls + '">' + escapeHtml(r.status || "—") + '</span></td>' +
       '<td>' + escapeHtml(r.paket || "—") + '</td><td class="cell-sub">' + formatDate(r.registriertAm) + '</td>' +
-      '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
+      '<td class="cell-sub">' + formatDate(r.letzteAktivitaet) + '</td>' +
+      rowActionsCell(r.id);
   });
   return html + '</tbody></table>';
 }
@@ -757,7 +811,7 @@ function renderHerstellerTable(rows){
       '<td>' + escapeHtml(r.konditionen || "—") + '</td>' +
       '<td>' + (r.liefert_montage ? '<span class="pill pill-ok">Ja</span>' : '<span class="pill pill-warn">Unklar/Nein</span>') + '</td>' +
       '<td>' + (r.website ? '<a class="link" href="' + escapeHtml(r.website) + '" target="_blank" rel="noopener">Website ↗</a>' : "—") + '</td>' +
-      '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
+      rowActionsCell(r.id);
   });
   return html + '</tbody></table>';
 }
@@ -771,7 +825,7 @@ function renderGeraeteTable(rows){
       '<td>' + (r.hersteller ? escapeHtml(r.hersteller.name) : "—") + '</td>' +
       '<td>' + formatEuro(r.preis) + '</td>' +
       '<td>' + (r.url ? '<a class="link" href="' + escapeHtml(r.url) + '" target="_blank" rel="noopener">Website ↗</a>' : "—") + '</td>' +
-      '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
+      rowActionsCell(r.id);
   });
   return html + '</tbody></table>';
 }
@@ -784,7 +838,7 @@ function renderPartnerTable(rows){
       '<td>' + escapeHtml(r.gewerk || r.leistung || "—") + '</td>' +
       '<td class="cell-sub">' + escapeHtml(r.plz_bereich || "—") + '</td>' +
       '<td>' + (r.website ? '<a class="link" href="' + escapeHtml(r.website) + '" target="_blank" rel="noopener">Website ↗</a>' : "—") + '</td>' +
-      '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
+      rowActionsCell(r.id);
   });
   return html + '</tbody></table>';
 }
@@ -799,7 +853,7 @@ function renderProjekteTable(rows){
       '<td>' + formatEuro(r.summe) + '</td>' +
       '<td>' + (r.montage_partner ? escapeHtml(r.montage_partner.name) : "—") + '</td>' +
       '<td class="cell-sub">' + escapeHtml(r.zustaendig || "—") + '</td>' +
-      '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + r.id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + r.id + '">Löschen</button></div></td></tr>';
+      rowActionsCell(r.id);
   });
   return html + '</tbody></table>';
 }
@@ -815,16 +869,22 @@ function wireRowActions(){
   });
   document.querySelectorAll("[data-delete]").forEach(function(btn){
     btn.addEventListener("click", async function(){
-      if(!confirm("Wollen Sie " + DELETE_LABELS[state.tab] + " wirklich unwiderruflich aus der Datenbank löschen?")) return;
-      try{
-        if(state.tab === "kunden") await deleteKunde(btn.dataset.delete);
-        else if(state.tab === "hersteller") await deleteHersteller(btn.dataset.delete);
-        else if(state.tab === "geraete") await deleteGeraet(btn.dataset.delete);
-        else if(state.tab === "montage_partner") await deletePartner(btn.dataset.delete);
-        else await deleteProjekt(btn.dataset.delete);
-        toast("Gelöscht.");
-        await loadAll();
-      }catch(err){ toast("Fehler beim Löschen: " + err.message); }
+      if(!confirm("Wollen Sie " + DELETE_LABELS[state.tab] + " archivieren? Sie finden es danach im Papierkorb wieder.")) return;
+      try{ await archiveRow(state.tab, btn.dataset.delete); toast("Archiviert."); await loadAll(); }
+      catch(err){ toast("Fehler beim Archivieren: " + err.message); }
+    });
+  });
+  document.querySelectorAll("[data-restore]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await restoreRow(state.tab, btn.dataset.restore); toast("Wiederhergestellt."); await loadAll(); }
+      catch(err){ toast("Fehler beim Wiederherstellen: " + err.message); }
+    });
+  });
+  document.querySelectorAll("[data-purge]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      if(!confirm("Wollen Sie " + DELETE_LABELS[state.tab] + " wirklich UNWIDERRUFLICH aus der Datenbank löschen? Das kann nicht rückgängig gemacht werden.")) return;
+      try{ await purgeRow(state.tab, btn.dataset.purge); toast("Endgültig gelöscht."); await loadAll(); }
+      catch(err){ toast("Fehler beim Löschen: " + err.message); }
     });
   });
 }
@@ -871,9 +931,17 @@ function bindFormClose(){
 
 function openKundeForm(existing){
   var d = existing || {};
+  var metaBlock = existing
+    ? '<div class="cell-sub" style="margin:-6px 0 16px;line-height:1.7;">' +
+        'Letzte Aktivität: ' + formatDateTime(d.letzteAktivitaet) + '<br>' +
+        'DSGVO-Einwilligung: ' + (d.dsgvoAm ? formatDateTime(d.dsgvoAm) + (d.dsgvoQuelle ? ' · ' + escapeHtml(d.dsgvoQuelle) : '') : 'nicht erfasst (Eintrag vor Einführung dieses Felds)') +
+      '</div>'
+    : '';
+  var historyBlock = existing ? '<div class="field"><label>Statusverlauf</label><div id="statusHistoryHost"></div></div>' : '';
   document.getElementById("modalRoot").innerHTML =
     '<div class="modal-backdrop" id="modalBackdrop"><div class="modal">' +
       '<h2>' + (existing ? "Kunde bearbeiten" : "Kunde manuell anlegen") + '</h2>' +
+      metaBlock +
       '<form id="entityForm">' +
         '<div class="field"><label>Name *</label><input name="name" required value="' + escapeHtml(d.name) + '"></div>' +
         '<div class="field"><label>E-Mail *</label><input type="email" name="email" required value="' + escapeHtml(d.email) + '"></div>' +
@@ -882,6 +950,7 @@ function openKundeForm(existing){
         '<div class="field"><label>Status</label><select name="status">' + opts(STATUS_OPTIONS, d.status || "Interessent") + '</select></div></div>' +
         '<div class="field"><label>Paket</label><select name="paket">' + opts(PAKET_OPTIONS, d.paket) + '</select></div>' +
         '<div class="field"><label>Notizen</label><textarea name="notizen">' + escapeHtml(d.notizen) + '</textarea></div>' +
+        historyBlock +
         '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Abbrechen</button><button type="submit" class="btn">Speichern</button></div>' +
       '</form></div></div>';
   bindFormClose();
@@ -889,9 +958,14 @@ function openKundeForm(existing){
     e.preventDefault();
     var f = e.target;
     var payload = { name:f.name.value.trim(), email:f.email.value.trim(), telefon:f.telefon.value.trim(), quelle:f.quelle.value, status:f.status.value, paket:f.paket.value, notizen:f.notizen.value };
-    try{ await saveKunde(payload, existing ? existing.id : null); toast(existing ? "Kunde aktualisiert." : "Kunde angelegt."); closeForm(); await loadAll(); }
-    catch(err){ toast("Fehler beim Speichern: " + err.message); }
+    try{
+      await saveKunde(payload, existing ? existing.id : null);
+      if(existing) await recordStatusChange("kunden", existing.id, existing.status, payload.status);
+      toast(existing ? "Kunde aktualisiert." : "Kunde angelegt.");
+      closeForm(); await loadAll();
+    }catch(err){ toast("Fehler beim Speichern: " + err.message); }
   });
+  if(existing) renderStatusHistoryInto(document.getElementById("statusHistoryHost"), "kunden", existing.id);
 }
 
 function openHerstellerForm(existing){
@@ -922,8 +996,8 @@ function openHerstellerForm(existing){
 
 function openGeraetForm(existing){
   var d = existing || {};
-  var herstellerSel = '<option value="">— kein Hersteller —</option>' + state.hersteller.map(function(h){
-    return '<option value="' + h.id + '"' + (d.hersteller_id === h.id || (d.hersteller && d.hersteller.id === h.id) ? " selected" : "") + '>' + escapeHtml(h.name) + '</option>';
+  var herstellerSel = '<option value="">— kein Hersteller —</option>' + state.hersteller.filter(function(h){ return !h.archiviert || h.id === d.hersteller_id || (d.hersteller && h.id === d.hersteller.id); }).map(function(h){
+    return '<option value="' + h.id + '"' + (d.hersteller_id === h.id || (d.hersteller && d.hersteller.id === h.id) ? " selected" : "") + '>' + escapeHtml(h.name) + (h.archiviert ? " (archiviert)" : "") + '</option>';
   }).join("");
   document.getElementById("modalRoot").innerHTML =
     '<div class="modal-backdrop" id="modalBackdrop"><div class="modal">' +
@@ -977,16 +1051,17 @@ function openPartnerForm(existing){
 
 async function openProjektForm(existing){
   var d = existing || {};
-  var kundeSel = '<option value="">— kein Kunde —</option>' + state.kunden.map(function(k){
-    return '<option value="' + k.id + '"' + (d.kunde_id === k.id || (d.kunden && d.kunden.id === k.id) ? " selected" : "") + '>' + escapeHtml(k.name) + ' (' + escapeHtml(k.email) + ')</option>';
+  var kundeSel = '<option value="">— kein Kunde —</option>' + state.kunden.filter(function(k){ return !k.archiviert || k.id === d.kunde_id || (d.kunden && k.id === d.kunden.id); }).map(function(k){
+    return '<option value="' + k.id + '"' + (d.kunde_id === k.id || (d.kunden && d.kunden.id === k.id) ? " selected" : "") + '>' + escapeHtml(k.name) + ' (' + escapeHtml(k.email) + ')' + (k.archiviert ? " (archiviert)" : "") + '</option>';
   }).join("");
-  var partnerSel = '<option value="">— kein Montage-Partner —</option>' + state.partner.map(function(p){
-    return '<option value="' + p.id + '"' + (d.montage_partner_id === p.id || (d.montage_partner && d.montage_partner.id === p.id) ? " selected" : "") + '>' + escapeHtml(p.name) + ' (' + escapeHtml(p.typ) + ')</option>';
+  var partnerSel = '<option value="">— kein Montage-Partner —</option>' + state.partner.filter(function(p){ return !p.archiviert || p.id === d.montage_partner_id || (d.montage_partner && p.id === d.montage_partner.id); }).map(function(p){
+    return '<option value="' + p.id + '"' + (d.montage_partner_id === p.id || (d.montage_partner && d.montage_partner.id === p.id) ? " selected" : "") + '>' + escapeHtml(p.name) + ' (' + escapeHtml(p.typ) + ')' + (p.archiviert ? " (archiviert)" : "") + '</option>';
   }).join("");
 
   var positionenBlock = existing
     ? '<div class="field"><label>Bestellte Geräte</label><div id="positionsHost"></div></div>'
     : '<p class="cell-sub" style="margin:0 0 14px;">Bestellte Geräte lassen sich hinzufügen, sobald das Projekt einmal gespeichert ist — dafür Speichern klicken, dann erneut „Bearbeiten“.</p>';
+  var historyBlock = existing ? '<div class="field"><label>Statusverlauf</label><div id="statusHistoryHost"></div></div>' : '';
 
   document.getElementById("modalRoot").innerHTML =
     '<div class="modal-backdrop" id="modalBackdrop"><div class="modal" style="max-width:600px;">' +
@@ -1000,6 +1075,7 @@ async function openProjektForm(existing){
         '<div class="field"><label>Montage-Partner</label><select name="montage_partner_id">' + partnerSel + '</select></div>' +
         '<div class="field"><label>Notizen</label><textarea name="notizen">' + escapeHtml(d.notizen) + '</textarea></div>' +
         positionenBlock +
+        historyBlock +
         '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Abbrechen</button><button type="submit" class="btn">Speichern</button></div>' +
       '</form></div></div>';
   bindFormClose();
@@ -1007,11 +1083,15 @@ async function openProjektForm(existing){
     e.preventDefault();
     var f = e.target;
     var payload = { kunde_id: f.kunde_id.value || null, status:f.status.value, paket:f.paket.value, summe:f.summe.value, zustaendig:f.zustaendig.value.trim(), montage_partner_id: f.montage_partner_id.value || null, notizen:f.notizen.value };
-    try{ await saveProjekt(payload, existing ? existing.id : null); toast(existing ? "Projekt aktualisiert." : "Projekt angelegt."); closeForm(); await loadAll(); }
-    catch(err){ toast("Fehler beim Speichern: " + err.message); }
+    try{
+      await saveProjekt(payload, existing ? existing.id : null);
+      if(existing) await recordStatusChange("projekte", existing.id, existing.status, payload.status);
+      toast(existing ? "Projekt aktualisiert." : "Projekt angelegt.");
+      closeForm(); await loadAll();
+    }catch(err){ toast("Fehler beim Speichern: " + err.message); }
   });
 
-  if(existing) await refreshPositionsHost(existing.id);
+  if(existing){ await refreshPositionsHost(existing.id); renderStatusHistoryInto(document.getElementById("statusHistoryHost"), "projekte", existing.id); }
 }
 
 async function refreshPositionsHost(projektId){
@@ -1021,7 +1101,7 @@ async function refreshPositionsHost(projektId){
   try{ positionen = await loadPositionen(projektId); }
   catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
 
-  var geraetSel = '<option value="">Gerät wählen …</option>' + state.geraete.map(function(g){
+  var geraetSel = '<option value="">Gerät wählen …</option>' + state.geraete.filter(function(g){ return !g.archiviert; }).map(function(g){
     return '<option value="' + g.id + '" data-preis="' + (g.preis == null ? "" : g.preis) + '">' + escapeHtml(g.kategorie) + ' — ' + escapeHtml(g.modell) + ' (' + (TIER_LABELS[g.tier] || g.tier) + ', ' + formatEuro(g.preis) + ')</option>';
   }).join("");
 
@@ -1095,12 +1175,18 @@ document.getElementById("linksBtn").addEventListener("click", openLinksModal);
 document.getElementById("addBtn").addEventListener("click", function(){ openForm(null); });
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
 document.getElementById("exportBtn").addEventListener("click", exportCsv);
+document.getElementById("trashToggleBtn").addEventListener("click", function(){
+  state.showArchived = !state.showArchived;
+  renderTabs();
+  renderTable();
+});
 document.getElementById("searchInput").addEventListener("input", function(e){ state.search = e.target.value; renderTable(); });
 document.querySelectorAll("#tabs button").forEach(function(btn){
   btn.addEventListener("click", function(){
     state.tab = btn.dataset.tab;
     state.search = "";
     state.sortField = null; state.sortDir = 1;
+    state.showArchived = false;
     document.getElementById("searchInput").value = "";
     renderTabs();
     renderActiveTab();
