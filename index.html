@@ -54,9 +54,9 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;}
 .field label{display:block;font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-dim);margin-bottom:5px;}
 .field input,.field select,.field textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);}
 .pw-wrap{position:relative;}
-.pw-wrap input{padding-right:38px!important;}
-.pw-toggle{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;padding:6px;font-size:.95rem;line-height:1;color:var(--ink-dim);}
-.pw-toggle:hover{color:var(--ink);}
+.pw-wrap input{padding-right:84px!important;}
+.pw-toggle{position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;padding:4px;font-size:.78rem;font-weight:600;line-height:1;color:var(--brass);}
+.pw-toggle:hover{text-decoration:underline;}
 .field textarea{min-height:70px;resize:vertical;font-family:inherit;}
 .err{color:var(--crit);font-size:.8rem;margin:-4px 0 14px;}
 .tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line);overflow-x:auto;-webkit-overflow-scrolling:touch;}
@@ -109,7 +109,7 @@ a.link:hover{text-decoration:underline;}
     <p>Zugang zur Backoffice-Datenbank.</p>
     <form id="loginForm">
       <div class="field"><label>E-Mail</label><input type="email" name="email" required autocomplete="username"></div>
-      <div class="field"><label>Passwort</label><div class="pw-wrap"><input type="password" name="password" id="loginPw" required autocomplete="current-password"><button type="button" class="pw-toggle" data-pw-toggle="loginPw" aria-label="Passwort anzeigen">👁</button></div></div>
+      <div class="field"><label>Passwort</label><div class="pw-wrap"><input type="password" name="password" id="loginPw" required autocomplete="current-password"><button type="button" class="pw-toggle" data-pw-toggle="loginPw" aria-label="Passwort anzeigen">Anzeigen</button></div></div>
       <p class="err" id="loginError" hidden></p>
       <button type="submit" class="btn" style="width:100%;">Anmelden</button>
     </form>
@@ -120,8 +120,8 @@ a.link:hover{text-decoration:underline;}
     <h1>Neues Passwort setzen</h1>
     <p>Bitte ein neues, sicheres Passwort für Ihren Backoffice-Zugang vergeben.</p>
     <form id="recoveryForm">
-      <div class="field"><label>Neues Passwort</label><div class="pw-wrap"><input type="password" name="password" id="recoveryPw1" required minlength="10" autocomplete="new-password"><button type="button" class="pw-toggle" data-pw-toggle="recoveryPw1" aria-label="Passwort anzeigen">👁</button></div></div>
-      <div class="field"><label>Passwort bestätigen</label><div class="pw-wrap"><input type="password" name="password2" id="recoveryPw2" required minlength="10" autocomplete="new-password"><button type="button" class="pw-toggle" data-pw-toggle="recoveryPw2" aria-label="Passwort anzeigen">👁</button></div></div>
+      <div class="field"><label>Neues Passwort</label><div class="pw-wrap"><input type="password" name="password" id="recoveryPw1" required minlength="10" autocomplete="new-password"><button type="button" class="pw-toggle" data-pw-toggle="recoveryPw1" aria-label="Passwort anzeigen">Anzeigen</button></div></div>
+      <div class="field"><label>Passwort bestätigen</label><div class="pw-wrap"><input type="password" name="password2" id="recoveryPw2" required minlength="10" autocomplete="new-password"><button type="button" class="pw-toggle" data-pw-toggle="recoveryPw2" aria-label="Passwort anzeigen">Anzeigen</button></div></div>
       <p class="cell-sub" style="margin:-6px 0 14px;">Mindestens 10 Zeichen, mit Groß- und Kleinbuchstaben, einer Zahl und einem Sonderzeichen.</p>
       <p class="err" id="recoveryError" hidden></p>
       <button type="submit" class="btn" style="width:100%;">Passwort speichern</button>
@@ -157,7 +157,7 @@ a.link:hover{text-decoration:underline;}
       <button type="button" class="btn" id="addBtn">+ Neu</button>
       <button type="button" class="btn-ghost btn btn-sm" id="refreshBtn">Aktualisieren</button>
       <button type="button" class="btn-ghost btn btn-sm" id="exportBtn">Export CSV</button>
-      <button type="button" class="btn-ghost btn btn-sm" id="trashToggleBtn">🗑 Papierkorb</button>
+      <button type="button" class="btn-ghost btn btn-sm" id="trashToggleBtn">Papierkorb</button>
       <span id="countLabel" style="margin-left:auto;color:var(--ink-dim);font-size:.8rem;"></span>
     </div>
     <div class="card table-wrap" id="tableCard" hidden>
@@ -672,7 +672,7 @@ function renderTabs(){
     var addBtn = document.getElementById("addBtn");
     addBtn.textContent = "+ " + TAB_LABELS[state.tab] + (state.tab === "kunden" ? " manuell anlegen" : " anlegen");
     addBtn.hidden = state.showArchived || !canManageCurrentTab();
-    document.getElementById("trashToggleBtn").textContent = state.showArchived ? "← Zurück zur Liste" : "🗑 Papierkorb";
+    document.getElementById("trashToggleBtn").textContent = state.showArchived ? "← Zurück zur Liste" : "Papierkorb";
     document.getElementById("exportBtn").hidden = state.showArchived;
   }
 }
@@ -1085,7 +1085,7 @@ function renderPartnerTable(rows){
   var html = '<table><thead><tr>' + sortTh("Name","name") + sortTh("Typ","typ") + sortTh("Gewerk / Leistung","gewerk") + sortTh("PLZ-Bereich","plz_bereich") + '<th>Website</th><th></th></tr></thead><tbody>';
   rows.forEach(function(r){
     html += '<tr>' +
-      '<td>' + escapeHtml(r.name) + (r.montage_notiz ? '<div class="cell-sub" style="color:var(--warn);max-width:280px;">⚠ ' + escapeHtml(r.montage_notiz) + '</div>' : '') + '</td>' +
+      '<td>' + escapeHtml(r.name) + (r.montage_notiz ? '<div class="cell-sub" style="color:var(--warn);max-width:280px;">Hinweis: ' + escapeHtml(r.montage_notiz) + '</div>' : '') + '</td>' +
       '<td><span class="pill pill-' + (r.typ === "bundesweit" ? "ok" : "neutral") + '">' + escapeHtml(r.typ) + '</span></td>' +
       '<td>' + escapeHtml(r.gewerk || r.leistung || "—") + '</td>' +
       '<td class="cell-sub">' + escapeHtml(r.plz_bereich || "—") + '</td>' +
@@ -1600,7 +1600,7 @@ document.querySelectorAll("[data-pw-toggle]").forEach(function(btn){
     if(!input) return;
     var showing = input.type === "text";
     input.type = showing ? "password" : "text";
-    btn.textContent = showing ? "👁" : "🙈";
+    btn.textContent = showing ? "Anzeigen" : "Verbergen";
     btn.setAttribute("aria-label", showing ? "Passwort anzeigen" : "Passwort verbergen");
   });
 });
