@@ -191,10 +191,10 @@ var STATUS_PILL = {"Kunde":"ok","Projekt abgeschlossen":"ok","Angebot erstellt":
 
 var TIER_LABELS = { budget:"Einstieg", premium:"Premium" };
 var state = { session: null, rolle: null, tab: "dashboard", search: "", sortField: null, sortDir: 1, showArchived: false, kunden: [], hersteller: [], geraete: [], partner: [], projekte: [], team: [] };
-/* Rollen-Einschraenkungen sind aktuell nur UI-seitig (Buttons ausgeblendet).
-   Echte Durchsetzung braucht zusaetzliche RLS-Policies auf den bestehenden
-   Tabellen -- folgt als eigener Schritt, sobald die vorhandenen Policies
-   bekannt sind (siehe Rueckmeldung dazu). */
+/* Rollen-Einschraenkung ist zusaetzlich zu den ausgeblendeten Buttons hier
+   auch serverseitig per RLS-Policy erzwungen (is_owner()-Funktion prueft
+   team_mitglieder) -- Mitarbeiter koennen Hersteller/Geraete nicht aendern
+   und nichts endgueltig loeschen, selbst bei direktem API-Zugriff. */
 var CATALOG_TABS = ["hersteller", "geraete"];
 function canManageCurrentTab(){
   return state.rolle === "owner" || CATALOG_TABS.indexOf(state.tab) === -1;
@@ -917,8 +917,7 @@ async function renderTeam(){
 
   host.innerHTML =
     '<div class="card" style="padding:16px 20px;margin-bottom:14px;color:var(--ink-dim);font-size:.84rem;">' +
-      'Owner haben vollen Zugriff (inkl. Hersteller-/Geräte-Katalog und endgültigem Löschen aus dem Papierkorb). Mitarbeiter sehen alles, können den Katalog aber nicht ändern und nichts endgültig löschen. ' +
-      '<b>Hinweis:</b> das ist aktuell eine UI-Einschränkung, keine serverseitige Berechtigung — für echten Schutz vor absichtlicher Umgehung braucht es noch passende Datenbank-Regeln.' +
+      'Owner haben vollen Zugriff (inkl. Hersteller-/Geräte-Katalog und endgültigem Löschen aus dem Papierkorb). Mitarbeiter sehen alles, können den Katalog aber nicht ändern und nichts endgültig löschen — serverseitig erzwungen, nicht nur im Fenster hier ausgeblendet.' +
     '</div>' +
     '<div class="card table-wrap" style="margin-bottom:16px;"><table><thead><tr><th>E-Mail</th><th>Rolle</th><th>Hinzugefügt</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div class="card" style="padding:16px 20px;">' +
