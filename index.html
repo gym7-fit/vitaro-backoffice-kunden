@@ -53,6 +53,10 @@ button,input,select,textarea{font-family:inherit;font-size:inherit;}
 .field{margin-bottom:14px;}
 .field label{display:block;font-size:.74rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-dim);margin-bottom:5px;}
 .field input,.field select,.field textarea{width:100%;padding:9px 11px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);}
+.pw-wrap{position:relative;}
+.pw-wrap input{padding-right:38px!important;}
+.pw-toggle{position:absolute;right:4px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;padding:6px;font-size:.95rem;line-height:1;color:var(--ink-dim);}
+.pw-toggle:hover{color:var(--ink);}
 .field textarea{min-height:70px;resize:vertical;font-family:inherit;}
 .err{color:var(--crit);font-size:.8rem;margin:-4px 0 14px;}
 .tabs{display:flex;gap:4px;margin-bottom:18px;border-bottom:1px solid var(--line);overflow-x:auto;-webkit-overflow-scrolling:touch;}
@@ -105,7 +109,7 @@ a.link:hover{text-decoration:underline;}
     <p>Zugang zur Backoffice-Datenbank.</p>
     <form id="loginForm">
       <div class="field"><label>E-Mail</label><input type="email" name="email" required autocomplete="username"></div>
-      <div class="field"><label>Passwort</label><input type="password" name="password" required autocomplete="current-password"></div>
+      <div class="field"><label>Passwort</label><div class="pw-wrap"><input type="password" name="password" id="loginPw" required autocomplete="current-password"><button type="button" class="pw-toggle" data-pw-toggle="loginPw" aria-label="Passwort anzeigen">👁</button></div></div>
       <p class="err" id="loginError" hidden></p>
       <button type="submit" class="btn" style="width:100%;">Anmelden</button>
     </form>
@@ -116,8 +120,8 @@ a.link:hover{text-decoration:underline;}
     <h1>Neues Passwort setzen</h1>
     <p>Bitte ein neues, sicheres Passwort für Ihren Backoffice-Zugang vergeben.</p>
     <form id="recoveryForm">
-      <div class="field"><label>Neues Passwort</label><input type="password" name="password" id="recoveryPw1" required minlength="10" autocomplete="new-password"></div>
-      <div class="field"><label>Passwort bestätigen</label><input type="password" name="password2" id="recoveryPw2" required minlength="10" autocomplete="new-password"></div>
+      <div class="field"><label>Neues Passwort</label><div class="pw-wrap"><input type="password" name="password" id="recoveryPw1" required minlength="10" autocomplete="new-password"><button type="button" class="pw-toggle" data-pw-toggle="recoveryPw1" aria-label="Passwort anzeigen">👁</button></div></div>
+      <div class="field"><label>Passwort bestätigen</label><div class="pw-wrap"><input type="password" name="password2" id="recoveryPw2" required minlength="10" autocomplete="new-password"><button type="button" class="pw-toggle" data-pw-toggle="recoveryPw2" aria-label="Passwort anzeigen">👁</button></div></div>
       <p class="cell-sub" style="margin:-6px 0 14px;">Mindestens 10 Zeichen, mit Groß- und Kleinbuchstaben, einer Zahl und einem Sonderzeichen.</p>
       <p class="err" id="recoveryError" hidden></p>
       <button type="submit" class="btn" style="width:100%;">Passwort speichern</button>
@@ -1590,6 +1594,16 @@ document.getElementById("loginForm").addEventListener("submit", async function(e
   btn.disabled = false; btn.textContent = "Anmelden";
 });
 document.getElementById("logoutBtn").addEventListener("click", logout);
+document.querySelectorAll("[data-pw-toggle]").forEach(function(btn){
+  btn.addEventListener("click", function(){
+    var input = document.getElementById(btn.dataset.pwToggle);
+    if(!input) return;
+    var showing = input.type === "text";
+    input.type = showing ? "password" : "text";
+    btn.textContent = showing ? "👁" : "🙈";
+    btn.setAttribute("aria-label", showing ? "Passwort anzeigen" : "Passwort verbergen");
+  });
+});
 document.getElementById("forgotLink").addEventListener("click", async function(e){
   e.preventDefault();
   var email = prompt("Für welche E-Mail soll ein Link zum Zurücksetzen des Passworts verschickt werden?");
