@@ -587,7 +587,7 @@ async function inviteTeamMitglied(email, rolle){
       "Authorization": "Bearer " + (state.session ? state.session.access_token : SUPABASE_ANON_KEY),
       "Content-Type": "application/json"
     },
-    body: JSON.stringify({ email: email, rolle: rolle })
+    body: JSON.stringify({ email: email, rolle: rolle, redirectTo: location.origin + location.pathname })
   });
   var data = await res.json().catch(function(){ return {}; });
   if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));

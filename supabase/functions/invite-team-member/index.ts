@@ -65,7 +65,12 @@ Deno.serve(async (req: Request) => {
     const rolle = body.rolle === "owner" ? "owner" : "mitarbeiter";
     if (!email || !email.includes("@")) throw new Error("Bitte eine gültige E-Mail angeben.");
 
-    const redirectTo = req.headers.get("origin") || undefined;
+    // Muss die VOLLE URL sein (inkl. Pfad), exakt wie in den Supabase-Auth-
+    // "Redirect URLs" eingetragen -- nur die nackte Origin (ohne Pfad)
+    // matcht dort nicht, Supabase faellt dann still auf die Site-URL
+    // zurueck (z.B. localhost:3000). Kommt vom Frontend mit, mit fester
+    // Absicherung als Fallback.
+    const redirectTo = String(body.redirectTo || "") || "https://gym7-fit.github.io/vitaro-backoffice-kunden/";
     const { error: inviteErr } = await adminClient.auth.admin.inviteUserByEmail(email, { redirectTo });
     // "already been registered" ist kein Fehler -- Rolle trotzdem setzen/aendern.
     if (inviteErr && !/already.*registered/i.test(inviteErr.message || "")) {
