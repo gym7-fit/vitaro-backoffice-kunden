@@ -180,7 +180,9 @@ function parseHashParams(){
 }
 var _recovery = (function(){
   var params = parseHashParams();
-  return (params.type === "recovery" && params.access_token) ? params : null;
+  // "recovery" = Passwort-vergessen-Link, "invite" = Team-Einladungslink --
+  // beide landen hier auf derselben "Neues Passwort setzen"-Ansicht.
+  return (params.access_token && (params.type === "recovery" || params.type === "invite")) ? params : null;
 })();
 
 var STATUS_OPTIONS = ["Interessent","Erstgespräch vereinbart","Angebot erstellt","Kunde","Projekt abgeschlossen"];
@@ -577,9 +579,18 @@ async function loadTeam(){
   if(!res.ok) throw new Error("HTTP " + res.status);
   return await res.json();
 }
-async function addTeamMitglied(email, rolle){
-  var res = await api("/team_mitglieder", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ email: email, rolle: rolle }) });
-  if(!res.ok) throw new Error("HTTP " + res.status);
+async function inviteTeamMitglied(email, rolle){
+  var res = await fetch(SUPABASE_URL + "/functions/v1/invite-team-member", {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + (state.session ? state.session.access_token : SUPABASE_ANON_KEY),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ email: email, rolle: rolle })
+  });
+  var data = await res.json().catch(function(){ return {}; });
+  if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
 }
 async function removeTeamMitglied(id){
   var res = await api("/team_mitglieder?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
@@ -922,9 +933,9 @@ async function renderTeam(){
     '<div class="card table-wrap" style="margin-bottom:16px;"><table><thead><tr><th>E-Mail</th><th>Rolle</th><th>Hinzugefügt</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
     '<div class="card" style="padding:16px 20px;">' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;">' +
-        '<input type="email" id="teamEmail" placeholder="E-Mail (muss bereits einen Backoffice-Login haben)" style="flex:1 1 240px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+        '<input type="email" id="teamEmail" placeholder="E-Mail der neuen Person" style="flex:1 1 240px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
         '<select id="teamRolle" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);"><option value="mitarbeiter">Mitarbeiter</option><option value="owner">Owner</option></select>' +
-        '<button type="button" class="btn btn-sm" id="teamAddBtn">+ Hinzufügen</button>' +
+        '<button type="button" class="btn btn-sm" id="teamAddBtn">+ Einladen</button>' +
       '</div>' +
     '</div>';
 
@@ -939,8 +950,13 @@ async function renderTeam(){
     var emailEl = document.getElementById("teamEmail"), rolleEl = document.getElementById("teamRolle");
     var email = emailEl.value.trim();
     if(!email){ toast("Bitte eine E-Mail angeben."); return; }
-    try{ await addTeamMitglied(email, rolleEl.value); toast("Hinzugefügt."); await renderTeam(); }
-    catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+    var btn = document.getElementById("teamAddBtn");
+    btn.disabled = true; btn.textContent = "Lädt ein …";
+    try{
+      await inviteTeamMitglied(email, rolleEl.value);
+      toast("Einladung verschickt — die Person bekommt eine E-Mail zum Passwort-Setzen.");
+      await renderTeam();
+    }catch(err){ toast("Fehler beim Einladen: " + err.message); btn.disabled = false; btn.textContent = "+ Einladen"; }
   });
 }
 
