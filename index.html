@@ -114,9 +114,11 @@ a.link:hover{text-decoration:underline;}
 
   <div id="recoveryView" class="card login-card" hidden>
     <h1>Neues Passwort setzen</h1>
-    <p>Bitte ein neues Passwort für Ihren Backoffice-Zugang vergeben.</p>
+    <p>Bitte ein neues, sicheres Passwort für Ihren Backoffice-Zugang vergeben.</p>
     <form id="recoveryForm">
-      <div class="field"><label>Neues Passwort</label><input type="password" name="password" required minlength="8" autocomplete="new-password"></div>
+      <div class="field"><label>Neues Passwort</label><input type="password" name="password" id="recoveryPw1" required minlength="10" autocomplete="new-password"></div>
+      <div class="field"><label>Passwort bestätigen</label><input type="password" name="password2" id="recoveryPw2" required minlength="10" autocomplete="new-password"></div>
+      <p class="cell-sub" style="margin:-6px 0 14px;">Mindestens 10 Zeichen, mit Groß- und Kleinbuchstaben, einer Zahl und einem Sonderzeichen.</p>
       <p class="err" id="recoveryError" hidden></p>
       <button type="submit" class="btn" style="width:100%;">Passwort speichern</button>
     </form>
@@ -596,6 +598,19 @@ async function removeTeamMitglied(id){
   var res = await api("/team_mitglieder?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
+async function deleteTeamMitgliedGanz(email){
+  var res = await fetch(SUPABASE_URL + "/functions/v1/invite-team-member", {
+    method: "POST",
+    headers: {
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + (state.session ? state.session.access_token : SUPABASE_ANON_KEY),
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify({ action: "delete", email: email })
+  });
+  var data = await res.json().catch(function(){ return {}; });
+  if(!res.ok) throw new Error(data.error || ("HTTP " + res.status));
+}
 
 async function savePartner(payload, id){
   var res = id
@@ -922,7 +937,11 @@ async function renderTeam(){
         return '<tr><td>' + escapeHtml(m.email) + (self ? ' <span class="cell-sub">(du)</span>' : '') + '</td>' +
           '<td><span class="pill pill-' + (m.rolle === "owner" ? "ok" : "neutral") + '">' + (m.rolle === "owner" ? "Owner" : "Mitarbeiter") + '</span></td>' +
           '<td class="cell-sub">' + formatDate(m.erstellt_am) + '</td>' +
-          '<td>' + (self ? "" : '<button type="button" class="btn btn-danger btn-sm" data-team-remove="' + m.id + '">Entfernen</button>') + '</td></tr>';
+          '<td>' + (self ? "" :
+            '<div class="row-actions">' +
+              '<button type="button" class="btn btn-ghost btn-sm" data-team-remove="' + m.id + '" title="Rolle entfernen, Login bleibt bestehen">Nur Rolle entfernen</button>' +
+              '<button type="button" class="btn btn-danger btn-sm" data-team-delete="' + escapeHtml(m.email) + '" title="Rolle UND Login komplett löschen">Zugang löschen</button>' +
+            '</div>') + '</td></tr>';
       }).join("")
     : '<tr><td colspan="4" class="cell-sub">Noch niemand erfasst.</td></tr>';
 
@@ -944,6 +963,15 @@ async function renderTeam(){
       if(!confirm("Diese Person wirklich aus dem Team entfernen? (Der Login selbst bleibt bestehen, nur die Rolle hier wird entfernt.)")) return;
       try{ await removeTeamMitglied(btn.dataset.teamRemove); await renderTeam(); }
       catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-team-delete]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      var email = btn.dataset.teamDelete;
+      if(!confirm('Zugang von "' + email + '" wirklich UNWIDERRUFLICH löschen? Die Person kann sich danach nicht mehr anmelden (Login-Account wird komplett entfernt, nicht nur die Rolle).')) return;
+      btn.disabled = true; btn.textContent = "Löscht …";
+      try{ await deleteTeamMitgliedGanz(email); toast("Zugang gelöscht."); await renderTeam(); }
+      catch(err){ toast("Fehler beim Löschen: " + err.message); btn.disabled = false; btn.textContent = "Zugang löschen"; }
     });
   });
   document.getElementById("teamAddBtn").addEventListener("click", async function(){
@@ -1576,18 +1604,41 @@ document.getElementById("forgotLink").addEventListener("click", async function(e
     alert("Falls diese E-Mail einen Zugang hat, wurde gerade ein Link zum Zurücksetzen verschickt. Bitte E-Mail-Postfach prüfen.");
   }catch(err){ alert("Fehler: " + err.message); }
 });
+function passwordProblems(pw){
+  var problems = [];
+  if(pw.length < 10) problems.push("mindestens 10 Zeichen");
+  if(!/[a-z]/.test(pw)) problems.push("einen Kleinbuchstaben");
+  if(!/[A-Z]/.test(pw)) problems.push("einen Großbuchstaben");
+  if(!/[0-9]/.test(pw)) problems.push("eine Zahl");
+  if(!/[^a-zA-Z0-9]/.test(pw)) problems.push("ein Sonderzeichen");
+  return problems;
+}
 document.getElementById("recoveryForm").addEventListener("submit", async function(e){
   e.preventDefault();
   var f = e.target;
   var errEl = document.getElementById("recoveryError");
   errEl.hidden = true;
+  var pw1 = f.password.value, pw2 = f.password2.value;
+
+  if(pw1 !== pw2){
+    errEl.textContent = "Die beiden Passwörter stimmen nicht überein.";
+    errEl.hidden = false;
+    return;
+  }
+  var problems = passwordProblems(pw1);
+  if(problems.length){
+    errEl.textContent = "Das Passwort braucht noch: " + problems.join(", ") + ".";
+    errEl.hidden = false;
+    return;
+  }
+
   var btn = f.querySelector("button[type=submit]");
   btn.disabled = true; btn.textContent = "Speichert …";
   try{
     var res = await fetch(SUPABASE_URL + "/auth/v1/user", {
       method: "PUT",
       headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + _recovery.access_token, "Content-Type": "application/json" },
-      body: JSON.stringify({ password: f.password.value })
+      body: JSON.stringify({ password: pw1 })
     });
     var data = await res.json().catch(function(){ return {}; });
     if(!res.ok) throw new Error(data.msg || data.error_description || ("HTTP " + res.status));

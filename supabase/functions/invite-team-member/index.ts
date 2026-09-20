@@ -5,10 +5,14 @@
 // als Umgebungsvariablen -- niemand muss den Service-Role-Key irgendwo
 // eintragen, er landet nie im Browser-Code.
 //
-// Ablauf: Owner gibt im Backoffice-Team-Tab E-Mail + Rolle ein -> diese
-// Funktion prueft zuerst, ob der Aufrufer wirklich Owner ist, laedt dann
-// per Supabase-Admin-API einen echten Auth-Account ein (E-Mail mit
-// "Passwort setzen"-Link) und traegt die Rolle in team_mitglieder ein.
+// Zwei Aktionen (per body.action unterschieden), beide nur fuer Owner:
+//   "invite" (Standard): laedt per Supabase-Admin-API einen echten
+//     Auth-Account ein (E-Mail mit "Passwort setzen"-Link) und traegt
+//     die Rolle in team_mitglieder ein.
+//   "delete": loescht die Person komplett -- team_mitglieder-Zeile UND
+//     den echten Auth-Account (Login funktioniert danach gar nicht mehr).
+//     Reines Entfernen der Rolle (ohne Login-Loeschung) laeuft weiterhin
+//     direkt ueber die Tabelle, siehe removeTeamMitglied() im Frontend.
 //
 // Deploy: Supabase Dashboard -> Edge Functions -> "Deploy a new function"
 // -> Name exakt "invite-team-member" -> diesen Code einfuegen -> Deploy.
@@ -57,14 +61,32 @@ Deno.serve(async (req: Request) => {
       .eq("email", callerEmail)
       .maybeSingle();
     if (!callerRow || callerRow.rolle !== "owner") {
-      throw new Error("Nur Owner dürfen Team-Mitglieder einladen.");
+      throw new Error("Nur Owner dürfen Team-Mitglieder verwalten.");
     }
 
     const body = await req.json().catch(() => ({}));
+    const action = body.action === "delete" ? "delete" : "invite";
     const email = String(body.email || "").trim().toLowerCase();
-    const rolle = body.rolle === "owner" ? "owner" : "mitarbeiter";
     if (!email || !email.includes("@")) throw new Error("Bitte eine gültige E-Mail angeben.");
+    if (email === callerEmail.toLowerCase()) throw new Error("Der eigene Zugang kann hier nicht gelöscht werden.");
 
+    if (action === "delete") {
+      // Echten Auth-Account per E-Mail finden (Admin-API kennt kein
+      // direktes "getUserByEmail" -- Nutzerliste durchsuchen reicht bei
+      // dieser Teamgroesse locker aus).
+      const { data: list, error: listErr } = await adminClient.auth.admin.listUsers({ perPage: 1000 });
+      if (listErr) throw new Error(listErr.message);
+      const authUser = (list?.users || []).find((u) => (u.email || "").toLowerCase() === email);
+      if (authUser) {
+        const { error: delAuthErr } = await adminClient.auth.admin.deleteUser(authUser.id);
+        if (delAuthErr) throw new Error(delAuthErr.message);
+      }
+      const { error: delRowErr } = await adminClient.from("team_mitglieder").delete().eq("email", email);
+      if (delRowErr) throw new Error(delRowErr.message);
+      return jsonResponse({ ok: true, deletedAuthUser: !!authUser });
+    }
+
+    const rolle = body.rolle === "owner" ? "owner" : "mitarbeiter";
     // Muss die VOLLE URL sein (inkl. Pfad), exakt wie in den Supabase-Auth-
     // "Redirect URLs" eingetragen -- nur die nackte Origin (ohne Pfad)
     // matcht dort nicht, Supabase faellt dann still auf die Site-URL
