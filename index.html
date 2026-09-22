@@ -128,11 +128,23 @@ a.link:hover{text-decoration:underline;}
     </form>
   </div>
 
+  <div id="mfaView" class="card login-card" hidden>
+    <h1>Bestätigungscode</h1>
+    <p>Bitte den 6-stelligen Code aus Ihrer Authenticator-App eingeben.</p>
+    <form id="mfaForm">
+      <div class="field"><label>Code</label><input type="text" name="code" id="mfaCode" required inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code"></div>
+      <p class="err" id="mfaError" hidden></p>
+      <button type="submit" class="btn" style="width:100%;">Bestätigen</button>
+    </form>
+    <p style="text-align:center;margin:14px 0 0;"><a href="#" class="backlink" id="mfaBackLink">Zurück zum Login</a></p>
+  </div>
+
   <div id="appView" hidden>
     <div class="session-bar">
       <span class="who">Angemeldet als <b id="whoami"></b></span>
       <span class="actions">
         <button type="button" class="btn btn-ghost btn-sm" id="linksBtn">Links</button>
+        <button type="button" class="btn btn-ghost btn-sm" id="securityBtn">Sicherheit</button>
         <button type="button" class="btn btn-ghost btn-sm" id="logoutBtn">Abmelden</button>
       </span>
     </div>
@@ -190,6 +202,7 @@ var _recovery = (function(){
   // beide landen hier auf derselben "Neues Passwort setzen"-Ansicht.
   return (params.access_token && (params.type === "recovery" || params.type === "invite")) ? params : null;
 })();
+var _mfaPending = null; // {access_token, refresh_token, email, factorId} waehrend des 2FA-Codeschritts beim Login
 
 var STATUS_OPTIONS = ["Interessent","Erstgespräch vereinbart","Angebot erstellt","Kunde","Projekt abgeschlossen"];
 var PAKET_OPTIONS = ["","Essential","Signature","Maßgeschneidert"];
@@ -274,9 +287,70 @@ async function login(email, password){
   });
   var data = await res.json();
   if(!res.ok){ throw new Error(data.error_description || data.msg || "Anmeldung fehlgeschlagen."); }
-  saveSession({ access_token: data.access_token, refresh_token: data.refresh_token, email: email });
+  return data; // {access_token, refresh_token, ...} -- Speichern erst nach dem 2FA-Check (siehe checkNeedsMfa)
 }
 function logout(){ saveSession(null); renderShell(); toast("Abgemeldet."); }
+
+/* ---------- Zwei-Faktor-Authentifizierung (TOTP) ---------- */
+function decodeJwt(token){
+  try{
+    var payload = token.split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    while(payload.length % 4) payload += "=";
+    return JSON.parse(atob(payload));
+  }catch(e){ return {}; }
+}
+async function checkNeedsMfa(tokens){
+  var claims = decodeJwt(tokens.access_token);
+  if(claims.aal === "aal2") return null; // Sitzung ist bereits vollstaendig (kein zweiter Faktor noetig)
+  var res = await fetch(SUPABASE_URL + "/auth/v1/user", {
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + tokens.access_token }
+  });
+  if(!res.ok) return null;
+  var user = await res.json();
+  var factor = (user.factors || []).filter(function(f){ return f.factor_type === "totp" && f.status === "verified"; })[0];
+  return factor ? { factorId: factor.id } : null;
+}
+async function mfaListFactors(){
+  var res = await fetch(SUPABASE_URL + "/auth/v1/user", {
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + state.session.access_token }
+  });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  var user = await res.json();
+  return user.factors || [];
+}
+async function mfaEnroll(){
+  var res = await fetch(SUPABASE_URL + "/auth/v1/factors", {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + state.session.access_token, "Content-Type": "application/json" },
+    body: JSON.stringify({ factor_type: "totp", friendly_name: "Authenticator" })
+  });
+  var data = await res.json();
+  if(!res.ok) throw new Error(data.msg || data.error_description || ("HTTP " + res.status));
+  return data; // {id, totp:{qr_code, secret, uri}}
+}
+async function mfaChallengeAndVerify(factorId, code, accessToken){
+  var chalRes = await fetch(SUPABASE_URL + "/auth/v1/factors/" + factorId + "/challenge", {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + accessToken, "Content-Type": "application/json" }
+  });
+  var chal = await chalRes.json();
+  if(!chalRes.ok) throw new Error(chal.msg || chal.error_description || ("HTTP " + chalRes.status));
+  var verRes = await fetch(SUPABASE_URL + "/auth/v1/factors/" + factorId + "/verify", {
+    method: "POST",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + accessToken, "Content-Type": "application/json" },
+    body: JSON.stringify({ challenge_id: chal.id, code: code })
+  });
+  var ver = await verRes.json();
+  if(!verRes.ok) throw new Error(ver.msg || ver.error_description || "Code falsch oder abgelaufen.");
+  return ver; // neue Session {access_token, refresh_token, ...} mit aal2
+}
+async function mfaUnenroll(factorId){
+  var res = await fetch(SUPABASE_URL + "/auth/v1/factors/" + factorId, {
+    method: "DELETE",
+    headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + state.session.access_token }
+  });
+  if(!res.ok){ var data = await res.json().catch(function(){ return {}; }); throw new Error(data.msg || data.error_description || ("HTTP " + res.status)); }
+}
 
 async function refreshToken(){
   if(!state.session || !state.session.refresh_token) return false;
@@ -349,10 +423,13 @@ async function storageDelete(path){
 /* ---------- Laden ---------- */
 async function loadAll(){
   state.rolle = await loadMyRole();
-  await Promise.all([loadKunden(), loadHersteller(), loadGeraete(), loadPartner(), loadProjekte()]);
+  await Promise.all([loadKunden(), loadHersteller(), loadGeraete(), loadPartner(), loadProjekte(), loadTeamSafe()]);
   renderShell();
   renderTabs();
   renderActiveTab();
+}
+async function loadTeamSafe(){
+  try{ state.team = await loadTeam(); }catch(err){ state.team = []; }
 }
 function csvCell(v){
   var s = v == null ? "" : String(v);
@@ -536,10 +613,10 @@ async function loadAufgaben(projektId){
   if(!res.ok) throw new Error("HTTP " + res.status);
   return await res.json();
 }
-async function addAufgabe(projektId, titel, faelligAm){
+async function addAufgabe(projektId, titel, faelligAm, zugewiesenAn){
   var res = await api("/aufgaben", {
     method:"POST", headers:{"Prefer":"return=minimal"},
-    body: JSON.stringify({ projekt_id: projektId, titel: titel, faellig_am: faelligAm || null })
+    body: JSON.stringify({ projekt_id: projektId, titel: titel, faellig_am: faelligAm || null, zugewiesen_an: zugewiesenAn || null })
   });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
@@ -547,9 +624,24 @@ async function toggleAufgabe(id, erledigt){
   var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ erledigt: erledigt }) });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
+async function reassignAufgabe(id, zugewiesenAn){
+  var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ zugewiesen_an: zugewiesenAn || null }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
 async function deleteAufgabe(id){
   var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function loadOffeneAufgabenAlle(){
+  var res = await api("/aufgaben?erledigt=eq.false&select=*,projekte(id,kunden(name))&order=faellig_am.asc.nullslast&limit=8");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function loadAnstehendeTermineAlle(){
+  var nowIso = new Date().toISOString();
+  var res = await api("/termine?datum=gte." + encodeURIComponent(nowIso) + "&select=*,projekte(id,kunden(name))&order=datum.asc&limit=8");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
 }
 
 /* ---------- Projekt-Dateien ---------- */
@@ -641,9 +733,11 @@ async function saveProjekt(payload, id){
 function renderShell(){
   var logged = !!state.session;
   var recovering = !!_recovery;
+  var mfaPending = !!_mfaPending;
   document.getElementById("recoveryView").hidden = !recovering;
-  document.getElementById("loginView").hidden = logged || recovering;
-  document.getElementById("appView").hidden = !logged || recovering;
+  document.getElementById("mfaView").hidden = !mfaPending || recovering;
+  document.getElementById("loginView").hidden = logged || recovering || mfaPending;
+  document.getElementById("appView").hidden = !logged || recovering || mfaPending;
   if(logged){
     document.getElementById("whoami").textContent = state.session.email + (state.rolle ? " (" + (state.rolle === "owner" ? "Owner" : "Mitarbeiter") + ")" : "");
   }
@@ -758,12 +852,22 @@ async function fetchEquipmentData(){
 }
 function buildSyncDiffs(equipment){
   var diffs = [];
+  var seenBrands = {};
   equipment.forEach(function(cat){
     if(!cat || !cat.tiers) return;
     ["budget", "premium"].forEach(function(tier){
       var t = cat.tiers[tier];
       if(!t) return;
       var expected = { modell: t.model || "", preis: (t.price == null ? null : Number(t.price)), url: t.url || "", herstellerName: t.brand || "" };
+      if(expected.herstellerName){
+        var brandKey = expected.herstellerName.trim().toLowerCase();
+        if(!seenBrands[brandKey]){
+          seenBrands[brandKey] = true;
+          if(!findHerstellerIdByName(expected.herstellerName)){
+            diffs.push({ status: "hersteller_missing", herstellerName: expected.herstellerName });
+          }
+        }
+      }
       var g = findGeraet(cat.id, cat.name, tier);
       if(!g){
         diffs.push({ catId: cat.id, catName: cat.name, tier: tier, status: "missing", expected: expected, geraetId: null });
@@ -815,6 +919,12 @@ function renderSyncTable(){
     return;
   }
   var rows = diffs.map(function(d, i){
+    if(d.status === "hersteller_missing"){
+      return '<tr><td colspan="2" class="cell-sub">Hersteller-Stammdaten</td>' +
+        '<td><span class="pill pill-warn">Fehlt im Backoffice</span>' +
+        '<div class="cell-sub">„' + escapeHtml(d.herstellerName) + '" wird auf der Live-Seite als Marke verwendet, ist aber kein Hersteller-Datensatz im Backoffice.</div></td>' +
+        '<td><button type="button" class="btn btn-sm" data-sync-apply="' + i + '">Anlegen</button></td></tr>';
+    }
     var badge, detail;
     if(d.status === "missing"){
       badge = '<span class="pill pill-warn">Fehlt im Backoffice</span>';
@@ -847,6 +957,16 @@ function renderSyncTable(){
     btn.addEventListener("click", async function(){
       var d = _syncData.diffs[Number(btn.dataset.syncApply)];
       btn.disabled = true; btn.textContent = "…";
+      if(d.status === "hersteller_missing"){
+        try{
+          await saveHersteller({ name: d.herstellerName }, null);
+          toast("Hersteller angelegt — Ansprechpartner/Kontakt/Konditionen bitte im Hersteller-Tab ergänzen.");
+          await loadHersteller();
+          _syncData.diffs = buildSyncDiffs(_syncData.equipment);
+          renderSyncTable();
+        }catch(err){ toast("Fehler: " + err.message); btn.disabled = false; btn.textContent = "Anlegen"; }
+        return;
+      }
       try{
         var herstellerId = findHerstellerIdByName(d.expected.herstellerName);
         var payload = { kategorie: d.catName, tier: d.tier, modell: d.expected.modell, preis: d.expected.preis, url: d.expected.url, hersteller_id: herstellerId };
@@ -883,7 +1003,21 @@ function statusBarRows(counts, order){
     '</div>';
   }).join("");
 }
-function renderDashboard(){
+function openProjektById(id){
+  var p = state.projekte.filter(function(x){ return x.id === id; })[0];
+  if(!p){ toast("Projekt nicht gefunden (evtl. archiviert)."); return; }
+  state.tab = "projekte"; state.search = ""; state.showArchived = false;
+  renderTabs(); renderActiveTab();
+  openForm(p);
+}
+function terminAufgabeListCard(title, items, renderItem){
+  return '<div class="card" style="padding:20px;"><h2 style="font-size:1rem;margin-bottom:14px;">' + escapeHtml(title) + '</h2>' +
+    (items.length
+      ? '<ul style="list-style:none;margin:0;padding:0;">' + items.map(renderItem).join("") + '</ul>'
+      : '<p class="cell-sub" style="margin:0;">Nichts anstehend.</p>') +
+    '</div>';
+}
+async function renderDashboard(){
   var host = document.getElementById("dashboardHost");
   var aktiveKunden = state.kunden.filter(function(k){ return !k.archiviert; });
   var aktiveProjekte = state.projekte.filter(function(p){ return !p.archiviert; });
@@ -921,9 +1055,42 @@ function renderDashboard(){
       '<div class="card" style="padding:20px;"><h2 style="font-size:1rem;margin-bottom:14px;">Kunden nach Status</h2>' + statusBarRows(kundenStatusCounts, STATUS_OPTIONS) + '</div>' +
       '<div class="card" style="padding:20px;"><h2 style="font-size:1rem;margin-bottom:14px;">Projekte nach Status</h2>' + statusBarRows(projektStatusCounts, PROJEKT_STATUS_OPTIONS) + '</div>' +
     '</div>' +
+    '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:16px;" id="dashFaelligHost">' +
+      '<div class="card" style="padding:20px;"><p class="cell-sub" style="margin:0;">Lade Termine/Aufgaben …</p></div>' +
+    '</div>' +
     '<div style="margin-top:14px;text-align:right;"><button type="button" class="btn btn-ghost btn-sm" id="dashRefreshBtn">Aktualisieren</button></div>';
 
   document.getElementById("dashRefreshBtn").addEventListener("click", loadAll);
+
+  var faelligHost = document.getElementById("dashFaelligHost");
+  try{
+    var heuteIso = new Date().toISOString().slice(0, 10);
+    var results = await Promise.all([loadAnstehendeTermineAlle(), loadOffeneAufgabenAlle()]);
+    var termine = results[0], aufgaben = results[1];
+    faelligHost.innerHTML =
+      terminAufgabeListCard("Nächste Termine", termine, function(t){
+        var kundeName = t.projekte && t.projekte.kunden ? t.projekte.kunden.name : "—";
+        return '<li style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);">' +
+          '<span class="cell-sub" style="width:120px;flex:0 0 auto;">' + formatDateTime(t.datum) + '</span>' +
+          '<span style="flex:1;">' + escapeHtml(t.titel) + '<span class="cell-sub"> · ' + escapeHtml(kundeName) + '</span></span>' +
+          (t.projekte ? '<button type="button" class="btn btn-ghost btn-sm" data-jump-projekt="' + t.projekte.id + '">Öffnen</button>' : '') +
+          '</li>';
+      }) +
+      terminAufgabeListCard("Offene Aufgaben", aufgaben, function(a){
+        var kundeName = a.projekte && a.projekte.kunden ? a.projekte.kunden.name : "—";
+        var ueberfaellig = a.faellig_am && a.faellig_am < heuteIso;
+        return '<li style="display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);">' +
+          (a.faellig_am ? '<span class="pill pill-' + (ueberfaellig ? "warn" : "neutral") + '" style="width:86px;flex:0 0 auto;text-align:center;">' + (ueberfaellig ? "Überfällig" : formatDate(a.faellig_am)) + '</span>' : '<span style="width:86px;flex:0 0 auto;"></span>') +
+          '<span style="flex:1;">' + escapeHtml(a.titel) + '<span class="cell-sub"> · ' + escapeHtml(kundeName) + (a.zugewiesen_an ? " · " + escapeHtml(a.zugewiesen_an) : "") + '</span></span>' +
+          (a.projekte ? '<button type="button" class="btn btn-ghost btn-sm" data-jump-projekt="' + a.projekte.id + '">Öffnen</button>' : '') +
+          '</li>';
+      });
+    faelligHost.querySelectorAll("[data-jump-projekt]").forEach(function(btn){
+      btn.addEventListener("click", function(){ openProjektById(btn.dataset.jumpProjekt); });
+    });
+  }catch(err){
+    faelligHost.innerHTML = '<div class="card" style="padding:20px;"><p class="err" style="margin:0;">Fehler beim Laden von Terminen/Aufgaben: ' + escapeHtml(err.message) + '</p></div>';
+  }
 }
 
 /* ---------- Team / Rollen (nur fuer Owner sichtbar) ---------- */
@@ -1175,6 +1342,77 @@ function openLinksModal(){
       '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Schließen</button></div>' +
     '</div></div>';
   bindFormClose();
+}
+async function openSecurityModal(){
+  document.getElementById("modalRoot").innerHTML =
+    '<div class="modal-backdrop" id="modalBackdrop"><div class="modal" style="max-width:440px;">' +
+      '<h2>Sicherheit</h2>' +
+      '<div id="securityHost"><p class="cell-sub">Lade …</p></div>' +
+      '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Schließen</button></div>' +
+    '</div></div>';
+  bindFormClose();
+  await renderSecurityHost();
+}
+async function renderSecurityHost(){
+  var host = document.getElementById("securityHost");
+  if(!host) return;
+  var factors;
+  try{ factors = await mfaListFactors(); }
+  catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
+  var active = factors.filter(function(f){ return f.factor_type === "totp" && f.status === "verified"; })[0];
+
+  if(active){
+    host.innerHTML =
+      '<p class="cell-sub" style="margin:0 0 14px;">Zwei-Faktor-Authentifizierung ist für diesen Zugang <b>aktiv</b>. Beim Anmelden wird zusätzlich zum Passwort ein Code aus Ihrer Authenticator-App abgefragt.</p>' +
+      '<button type="button" class="btn btn-danger btn-sm" id="mfaDisableBtn">Deaktivieren</button>';
+    document.getElementById("mfaDisableBtn").addEventListener("click", async function(){
+      if(!confirm("Zwei-Faktor-Authentifizierung wirklich deaktivieren? Beim nächsten Login reicht dann nur noch das Passwort.")) return;
+      this.disabled = true; this.textContent = "Deaktiviert …";
+      try{ await mfaUnenroll(active.id); toast("Zwei-Faktor-Authentifizierung deaktiviert."); await renderSecurityHost(); }
+      catch(err){ toast("Fehler: " + err.message); this.disabled = false; this.textContent = "Deaktivieren"; }
+    });
+    return;
+  }
+
+  host.innerHTML =
+    '<p class="cell-sub" style="margin:0 0 14px;">Zwei-Faktor-Authentifizierung ist für diesen Zugang <b>nicht aktiv</b>. Empfohlen, da hier echte Kundendaten liegen.</p>' +
+    '<button type="button" class="btn btn-sm" id="mfaSetupBtn">Einrichten</button>';
+  document.getElementById("mfaSetupBtn").addEventListener("click", async function(){
+    this.disabled = true; this.textContent = "Bereitet vor …";
+    try{
+      var enrolled = await mfaEnroll();
+      renderMfaSetupStep(enrolled);
+    }catch(err){ toast("Fehler: " + err.message); this.disabled = false; this.textContent = "Einrichten"; }
+  });
+}
+function renderMfaSetupStep(enrolled){
+  var host = document.getElementById("securityHost");
+  var qr = enrolled.totp && enrolled.totp.qr_code;
+  var qrHtml = qr
+    ? (qr.indexOf("<svg") === 0 ? qr : '<img src="' + qr + '" alt="QR-Code" style="width:180px;height:180px;">')
+    : '<p class="cell-sub">Kein QR-Code erhalten — Secret unten manuell eingeben.</p>';
+  host.innerHTML =
+    '<p class="cell-sub" style="margin:0 0 10px;">QR-Code mit einer Authenticator-App scannen (z. B. Google Authenticator, 1Password) und den angezeigten Code hier eingeben.</p>' +
+    '<div style="text-align:center;margin-bottom:10px;">' + qrHtml + '</div>' +
+    '<p class="cell-sub" style="margin:0 0 14px;word-break:break-all;">Manuell: <code>' + escapeHtml((enrolled.totp && enrolled.totp.secret) || "") + '</code></p>' +
+    '<div class="field"><label>Code aus der App</label><input type="text" id="mfaSetupCode" inputmode="numeric" pattern="[0-9]*" maxlength="6"></div>' +
+    '<p class="err" id="mfaSetupError" hidden></p>' +
+    '<button type="button" class="btn btn-sm" id="mfaSetupConfirmBtn">Bestätigen</button>';
+  document.getElementById("mfaSetupConfirmBtn").addEventListener("click", async function(){
+    var errEl = document.getElementById("mfaSetupError");
+    errEl.hidden = true;
+    var code = document.getElementById("mfaSetupCode").value.trim();
+    this.disabled = true; this.textContent = "Prüft …";
+    try{
+      var ver = await mfaChallengeAndVerify(enrolled.id, code, state.session.access_token);
+      saveSession({ access_token: ver.access_token, refresh_token: ver.refresh_token, email: state.session.email });
+      toast("Zwei-Faktor-Authentifizierung aktiviert.");
+      await renderSecurityHost();
+    }catch(err){
+      errEl.textContent = err.message; errEl.hidden = false;
+      this.disabled = false; this.textContent = "Bestätigen";
+    }
+  });
 }
 function bindFormClose(){
   document.getElementById("modalBackdrop").addEventListener("click", function(e){ if(e.target.id === "modalBackdrop") closeForm(); });
@@ -1463,12 +1701,19 @@ async function refreshAufgabenHost(projektId){
   try{ aufgaben = await loadAufgaben(projektId); }
   catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
 
+  function assigneeSel(selected, idPrefix, i){
+    var opts = '<option value="">— niemand —</option>' + state.team.map(function(m){
+      return '<option value="' + escapeHtml(m.email) + '"' + (selected === m.email ? " selected" : "") + '>' + escapeHtml(m.email) + '</option>';
+    }).join("");
+    return '<select ' + idPrefix + '="' + i + '" style="padding:5px 7px;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:var(--ink);font-size:.76rem;max-width:170px;">' + opts + '</select>';
+  }
   var rows = aufgaben.length
     ? aufgaben.map(function(a){
-        return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);">' +
+        return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap;">' +
           '<input type="checkbox" data-aufgabe-toggle="' + a.id + '"' + (a.erledigt ? " checked" : "") + '>' +
-          '<span style="flex:1;' + (a.erledigt ? "text-decoration:line-through;color:var(--ink-dim);" : "") + '">' + escapeHtml(a.titel) + '</span>' +
+          '<span style="flex:1;min-width:120px;' + (a.erledigt ? "text-decoration:line-through;color:var(--ink-dim);" : "") + '">' + escapeHtml(a.titel) + '</span>' +
           (a.faellig_am ? '<span class="cell-sub">' + formatDate(a.faellig_am) + '</span>' : '') +
+          assigneeSel(a.zugewiesen_an, "data-aufgabe-assign", a.id) +
           '<button type="button" class="btn btn-danger btn-sm" data-aufgabe-delete="' + a.id + '">×</button></li>';
       }).join("")
     : '<li class="cell-sub">Keine Aufgaben.</li>';
@@ -1478,12 +1723,19 @@ async function refreshAufgabenHost(projektId){
     '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
       '<input type="text" id="aufgabeTitel" placeholder="Neue Aufgabe" style="flex:1 1 160px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<input type="date" id="aufgabeFaellig" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
+      assigneeSel("", "id", "aufgabeZugewiesen") +
       '<button type="button" class="btn btn-ghost btn-sm" id="aufgabeAddBtn">+ Aufgabe</button>' +
     '</div>';
 
   host.querySelectorAll("[data-aufgabe-toggle]").forEach(function(cb){
     cb.addEventListener("change", async function(){
       try{ await toggleAufgabe(cb.dataset.aufgabeToggle, cb.checked); await refreshAufgabenHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-aufgabe-assign]").forEach(function(sel){
+    sel.addEventListener("change", async function(){
+      try{ await reassignAufgabe(sel.dataset.aufgabeAssign, sel.value); toast("Zuständigkeit aktualisiert."); }
       catch(err){ toast("Fehler: " + err.message); }
     });
   });
@@ -1494,10 +1746,10 @@ async function refreshAufgabenHost(projektId){
     });
   });
   document.getElementById("aufgabeAddBtn").addEventListener("click", async function(){
-    var titelEl = document.getElementById("aufgabeTitel"), faelligEl = document.getElementById("aufgabeFaellig");
+    var titelEl = document.getElementById("aufgabeTitel"), faelligEl = document.getElementById("aufgabeFaellig"), zugewiesenEl = document.getElementById("aufgabeZugewiesen");
     if(!titelEl.value.trim()){ toast("Bitte einen Titel angeben."); return; }
     try{
-      await addAufgabe(projektId, titelEl.value.trim(), faelligEl.value || null);
+      await addAufgabe(projektId, titelEl.value.trim(), faelligEl.value || null, zugewiesenEl ? zugewiesenEl.value : "");
       await refreshAufgabenHost(projektId);
     }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
   });
@@ -1584,14 +1836,47 @@ document.getElementById("loginForm").addEventListener("submit", async function(e
   var btn = f.querySelector("button[type=submit]");
   btn.disabled = true; btn.textContent = "Anmelden …";
   try{
-    await login(f.email.value.trim(), f.password.value);
+    var email = f.email.value.trim();
+    var tokens = await login(email, f.password.value);
+    var needsMfa = await checkNeedsMfa(tokens);
+    if(needsMfa){
+      _mfaPending = { access_token: tokens.access_token, refresh_token: tokens.refresh_token, email: email, factorId: needsMfa.factorId };
+      renderShell();
+      setTimeout(function(){ document.getElementById("mfaCode").focus(); }, 50);
+    }else{
+      saveSession({ access_token: tokens.access_token, refresh_token: tokens.refresh_token, email: email });
+      renderShell();
+      await loadAll();
+    }
+  }catch(err){
+    errEl.textContent = err.message;
+    errEl.hidden = false;
+  }
+  btn.disabled = false; btn.textContent = "Anmelden";
+});
+document.getElementById("mfaForm").addEventListener("submit", async function(e){
+  e.preventDefault();
+  var f = e.target;
+  var errEl = document.getElementById("mfaError");
+  errEl.hidden = true;
+  var btn = f.querySelector("button[type=submit]");
+  btn.disabled = true; btn.textContent = "Prüft …";
+  try{
+    var ver = await mfaChallengeAndVerify(_mfaPending.factorId, f.code.value.trim(), _mfaPending.access_token);
+    saveSession({ access_token: ver.access_token, refresh_token: ver.refresh_token, email: _mfaPending.email });
+    _mfaPending = null;
     renderShell();
     await loadAll();
   }catch(err){
     errEl.textContent = err.message;
     errEl.hidden = false;
   }
-  btn.disabled = false; btn.textContent = "Anmelden";
+  btn.disabled = false; btn.textContent = "Bestätigen";
+});
+document.getElementById("mfaBackLink").addEventListener("click", function(e){
+  e.preventDefault();
+  _mfaPending = null;
+  renderShell();
 });
 document.getElementById("logoutBtn").addEventListener("click", logout);
 document.querySelectorAll("[data-pw-toggle]").forEach(function(btn){
@@ -1664,6 +1949,7 @@ document.getElementById("recoveryForm").addEventListener("submit", async functio
   btn.disabled = false; btn.textContent = "Passwort speichern";
 });
 document.getElementById("linksBtn").addEventListener("click", openLinksModal);
+document.getElementById("securityBtn").addEventListener("click", openSecurityModal);
 document.getElementById("addBtn").addEventListener("click", function(){ openForm(null); });
 document.getElementById("refreshBtn").addEventListener("click", loadAll);
 document.getElementById("exportBtn").addEventListener("click", exportCsv);
