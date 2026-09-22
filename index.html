@@ -327,8 +327,10 @@ async function mfaEnroll(){
   try{
     var existing = await mfaListFactors();
     var stale = existing.filter(function(f){ return f.factor_type === "totp" && f.status !== "verified"; });
-    for(var i = 0; i < stale.length; i++){ await mfaUnenroll(stale[i].id); }
-  }catch(e){ /* best effort -- wenn das fehlschlaegt, versucht der Enroll es trotzdem */ }
+    for(var i = 0; i < stale.length; i++){
+      try{ await mfaUnenroll(stale[i].id); }catch(e){ /* einzelner Faktor weg/Fehler -- naechsten trotzdem versuchen */ }
+    }
+  }catch(e){ /* Liste nicht ladbar -- Enroll versucht es trotzdem */ }
   var res = await fetch(SUPABASE_URL + "/auth/v1/factors", {
     method: "POST",
     headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + state.session.access_token, "Content-Type": "application/json" },
