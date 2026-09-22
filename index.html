@@ -320,6 +320,15 @@ async function mfaListFactors(){
   return user.factors || [];
 }
 async function mfaEnroll(){
+  // Ein abgebrochener frueherer Einrichtungsversuch (Modal geschlossen, bevor
+  // der Code bestaetigt wurde) hinterlaesst einen "unverified"-Faktor mit
+  // demselben friendly_name -- das blockiert sonst jeden neuen Versuch mit
+  // "factor already exists". Vor dem Neuanlegen also aufraeumen.
+  try{
+    var existing = await mfaListFactors();
+    var stale = existing.filter(function(f){ return f.factor_type === "totp" && f.status !== "verified"; });
+    for(var i = 0; i < stale.length; i++){ await mfaUnenroll(stale[i].id); }
+  }catch(e){ /* best effort -- wenn das fehlschlaegt, versucht der Enroll es trotzdem */ }
   var res = await fetch(SUPABASE_URL + "/auth/v1/factors", {
     method: "POST",
     headers: { "apikey": SUPABASE_ANON_KEY, "Authorization": "Bearer " + state.session.access_token, "Content-Type": "application/json" },
