@@ -98,6 +98,7 @@ a.link:hover{text-decoration:underline;}
 .toast{position:fixed;bottom:22px;right:22px;background:var(--ink);color:var(--paper);padding:12px 18px;border-radius:8px;font-size:.84rem;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.3);z-index:200;opacity:0;transform:translateY(10px);transition:opacity .2s ease, transform .2s ease;pointer-events:none;}
 .toast.show{opacity:1;transform:translateY(0);}
 [hidden]{display:none!important;}
+#securityHost svg{width:180px!important;height:180px!important;}
 @media (max-width:720px){ .field-row{grid-template-columns:1fr;} }
 </style>
 </head>
@@ -1388,9 +1389,18 @@ async function renderSecurityHost(){
 function renderMfaSetupStep(enrolled){
   var host = document.getElementById("securityHost");
   var qr = enrolled.totp && enrolled.totp.qr_code;
-  var qrHtml = qr
-    ? (qr.indexOf("<svg") === 0 ? qr : '<img src="' + qr + '" alt="QR-Code" style="width:180px;height:180px;">')
-    : '<p class="cell-sub">Kein QR-Code erhalten — Secret unten manuell eingeben.</p>';
+  var qrHtml;
+  if(!qr){
+    qrHtml = '<p class="cell-sub">Kein QR-Code erhalten — Secret unten manuell eingeben.</p>';
+  }else if(qr.indexOf("data:") === 0){
+    qrHtml = '<img src="' + qr + '" alt="QR-Code" style="width:180px;height:180px;">';
+  }else{
+    // GoTrue liefert hier oft rohes SVG-Markup mit XML-Prolog/Kommentar davor
+    // (z.B. "<?xml version=\"1.0\"?>\n<!-- ... -->\n<svg ...>") -- ab dem
+    // ersten "<svg" abschneiden und direkt einbetten, nie als img-src nutzen.
+    var svgStart = qr.indexOf("<svg");
+    qrHtml = '<div style="display:inline-block;width:180px;height:180px;">' + (svgStart >= 0 ? qr.slice(svgStart) : qr) + '</div>';
+  }
   host.innerHTML =
     '<p class="cell-sub" style="margin:0 0 10px;">QR-Code mit einer Authenticator-App scannen (z. B. Google Authenticator, 1Password) und den angezeigten Code hier eingeben.</p>' +
     '<div style="text-align:center;margin-bottom:10px;">' + qrHtml + '</div>' +
