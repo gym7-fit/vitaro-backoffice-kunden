@@ -2,8 +2,15 @@
 //
 // Wird von einem Supabase Database Webhook aufgerufen (INSERT auf "kunden" --
 // also jede neue Planer-Registrierung oder jedes neue Kontaktformular).
-// Verschickt eine kurze Benachrichtigungs-E-Mail, damit eine neue Anfrage
-// nicht erst beim naechsten Blick ins Backoffice auffaellt.
+// Macht zwei Dinge:
+//   1. Verschickt eine kurze Benachrichtigungs-E-Mail an den Owner, damit
+//      eine neue Anfrage nicht erst beim naechsten Blick ins Backoffice
+//      auffaellt.
+//   2. Verschickt eine kurze Eingangsbestaetigung an den Kunden selbst --
+//      aber NUR, wenn die Anfrage wirklich von ihm selbst kam (quelle
+//      "Kontaktformular" oder "Planer-Registrierung"). Von Hand im
+//      Backoffice angelegte Kunden ("Direktakquise"/"Sonstige") bekommen
+//      keine automatische Mail, die waere dort unpassend.
 //
 // Braucht drei Secrets (Supabase Dashboard -> Edge Functions -> Secrets):
 //   GMAIL_USER          -- dieselbe Gmail-Adresse, die schon fuer die
@@ -67,9 +74,36 @@ Deno.serve(async (req: Request) => {
       subject: "Neue VITARO-Anfrage: " + (kunde.name || kunde.email || "unbekannt"),
       content: zeilen.join("\n"),
     });
+
+    const CUSTOMER_QUELLEN = ["Kontaktformular", "Planer-Registrierung"];
+    let customerMailSent = false;
+    if (kunde.email && CUSTOMER_QUELLEN.includes(kunde.quelle)) {
+      try {
+        const gruss = kunde.name ? "Hallo " + kunde.name + "," : "Hallo,";
+        const kundenZeilen = [
+          gruss,
+          "",
+          "vielen Dank für Ihre Anfrage bei VITARO Home Gym. Wir haben sie erhalten und melden uns in Kürze bei Ihnen.",
+          "",
+          "Mit freundlichen Grüßen",
+          "Ihr VITARO-Team",
+        ];
+        await client.send({
+          from: GMAIL_USER,
+          to: kunde.email,
+          subject: "Ihre Anfrage bei VITARO Home Gym",
+          content: kundenZeilen.join("\n"),
+        });
+        customerMailSent = true;
+      } catch (custErr) {
+        // Eingangsbestaetigung ist ein Nice-to-have -- ein Fehler hier darf
+        // die eigentliche (interne) Benachrichtigung nicht scheitern lassen.
+      }
+    }
+
     await client.close();
 
-    return new Response(JSON.stringify({ ok: true }), { headers: { "Content-Type": "application/json" } });
+    return new Response(JSON.stringify({ ok: true, customerMailSent }), { headers: { "Content-Type": "application/json" } });
   } catch (err) {
     return new Response(JSON.stringify({ error: String((err as Error).message || err) }), {
       status: 500,
