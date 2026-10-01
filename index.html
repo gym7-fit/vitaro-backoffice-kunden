@@ -222,7 +222,12 @@ var state = { session: null, rolle: null, tab: "dashboard", search: "", sortFiel
    team_mitglieder) -- Mitarbeiter koennen Hersteller/Geraete nicht aendern
    und nichts endgueltig loeschen, selbst bei direktem API-Zugriff. */
 var CATALOG_TABS = ["hersteller", "geraete"];
+var ROLE_LABELS = { owner: "Owner", mitarbeiter: "Mitarbeiter", leser: "Leser" };
+function canWrite(){
+  return state.rolle === "owner" || state.rolle === "mitarbeiter";
+}
 function canManageCurrentTab(){
+  if(!canWrite()) return false;
   return state.rolle === "owner" || CATALOG_TABS.indexOf(state.tab) === -1;
 }
 
@@ -472,6 +477,24 @@ function exportCsv(){
   document.body.appendChild(a); a.click(); a.remove();
   setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
 }
+var BACKUP_TABLES = ["kunden", "hersteller", "geraete", "montage_partner", "projekte", "projekt_positionen", "termine", "aufgaben", "projekt_dateien", "status_verlauf", "team_mitglieder"];
+async function exportFullBackup(){
+  var dump = { exported_at: new Date().toISOString() };
+  for(var i = 0; i < BACKUP_TABLES.length; i++){
+    var table = BACKUP_TABLES[i];
+    var res = await api("/" + table + "?select=*");
+    if(!res.ok) throw new Error(table + ": HTTP " + res.status);
+    dump[table] = await res.json();
+  }
+  var blob = new Blob([JSON.stringify(dump, null, 2)], { type: "application/json" });
+  var url = URL.createObjectURL(blob);
+  var a = document.createElement("a");
+  a.href = url;
+  a.download = "vitaro-backoffice-backup-" + new Date().toISOString().slice(0,19).replace(/[:T]/g, "-") + ".json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(function(){ URL.revokeObjectURL(url); }, 1000);
+  toast("Backup heruntergeladen.");
+}
 function renderActiveTab(){
   if(state.tab === "dashboard") renderDashboard();
   else if(state.tab === "datenabgleich") renderSyncCheck();
@@ -717,6 +740,27 @@ async function loadTeam(){
   if(!res.ok) throw new Error("HTTP " + res.status);
   return await res.json();
 }
+async function recordLogin(email){
+  try{ await api("/login_log", { method:"POST", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ email: email }) }); }
+  catch(e){ /* Protokollierung darf den Login nie blockieren */ }
+}
+async function loadLoginLog(){
+  var res = await api("/login_log?select=*&order=logged_in_at.desc&limit=50");
+  if(!res.ok) throw new Error("HTTP " + res.status);
+  return await res.json();
+}
+async function renderLoginLog(){
+  var host = document.getElementById("loginLogHost");
+  if(!host) return;
+  var rows;
+  try{ rows = await loadLoginLog(); }
+  catch(err){ host.innerHTML = '<p class="cell-sub">Kein Zugriff oder Fehler beim Laden.</p>'; return; }
+  host.innerHTML = rows.length
+    ? '<div class="table-wrap"><table><thead><tr><th>E-Mail</th><th>Wann</th></tr></thead><tbody>' +
+      rows.map(function(r){ return '<tr><td>' + escapeHtml(r.email) + '</td><td class="cell-sub">' + formatDateTime(r.logged_in_at) + '</td></tr>'; }).join("") +
+      '</tbody></table></div>'
+    : '<p class="cell-sub">Noch keine Logins protokolliert.</p>';
+}
 async function inviteTeamMitglied(email, rolle){
   var res = await fetch(SUPABASE_URL + "/functions/v1/invite-team-member", {
     method: "POST",
@@ -779,7 +823,7 @@ function renderShell(){
   document.getElementById("loginView").hidden = logged || recovering || mfaPending;
   document.getElementById("appView").hidden = !logged || recovering || mfaPending;
   if(logged){
-    document.getElementById("whoami").textContent = state.session.email + (state.rolle ? " (" + (state.rolle === "owner" ? "Owner" : "Mitarbeiter") + ")" : "");
+    document.getElementById("whoami").textContent = state.session.email + (state.rolle ? " (" + (ROLE_LABELS[state.rolle] || state.rolle) + ")" : "");
   }
 }
 var TAB_LABELS = { kunden:"Kunde", hersteller:"Hersteller", geraete:"Gerät", montage_partner:"Montage-Partner", projekte:"Projekt" };
@@ -958,12 +1002,13 @@ function renderSyncTable(){
     document.getElementById("syncRefreshBtn").addEventListener("click", renderSyncCheck);
     return;
   }
+  var ownerOnlyBtn = state.rolle === "owner";
   var rows = diffs.map(function(d, i){
     if(d.status === "hersteller_missing"){
       return '<tr><td colspan="2" class="cell-sub">Hersteller-Stammdaten</td>' +
         '<td><span class="pill pill-warn">Fehlt im Backoffice</span>' +
         '<div class="cell-sub">„' + escapeHtml(d.herstellerName) + '" wird auf der Live-Seite als Marke verwendet, ist aber kein Hersteller-Datensatz im Backoffice.</div></td>' +
-        '<td><button type="button" class="btn btn-sm" data-sync-apply="' + i + '">Anlegen</button></td></tr>';
+        '<td>' + (ownerOnlyBtn ? '<button type="button" class="btn btn-sm" data-sync-apply="' + i + '">Anlegen</button>' : '<span class="cell-sub">Nur Owner</span>') + '</td></tr>';
     }
     var badge, detail;
     if(d.status === "missing"){
@@ -981,7 +1026,7 @@ function renderSyncTable(){
       '<td>' + escapeHtml(d.catName) + '</td>' +
       '<td><span class="pill pill-' + (d.tier === "premium" ? "ok" : "neutral") + '">' + (TIER_LABELS[d.tier] || d.tier) + '</span></td>' +
       '<td>' + badge + detail + '</td>' +
-      '<td><button type="button" class="btn btn-sm" data-sync-apply="' + i + '">Übernehmen</button></td>' +
+      '<td>' + (ownerOnlyBtn ? '<button type="button" class="btn btn-sm" data-sync-apply="' + i + '">Übernehmen</button>' : '<span class="cell-sub">Nur Owner</span>') + '</td>' +
       '</tr>';
   }).join("");
 
@@ -1098,9 +1143,21 @@ async function renderDashboard(){
     '<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:16px;margin-top:16px;" id="dashFaelligHost">' +
       '<div class="card" style="padding:20px;"><p class="cell-sub" style="margin:0;">Lade Termine/Aufgaben …</p></div>' +
     '</div>' +
-    '<div style="margin-top:14px;text-align:right;"><button type="button" class="btn btn-ghost btn-sm" id="dashRefreshBtn">Aktualisieren</button></div>';
+    '<div style="margin-top:14px;text-align:right;display:flex;gap:8px;justify-content:flex-end;">' +
+      (state.rolle === "owner" ? '<button type="button" class="btn btn-ghost btn-sm" id="dashBackupBtn">Vollständiges Backup</button>' : '') +
+      '<button type="button" class="btn btn-ghost btn-sm" id="dashRefreshBtn">Aktualisieren</button>' +
+    '</div>';
 
   document.getElementById("dashRefreshBtn").addEventListener("click", loadAll);
+  var backupBtn = document.getElementById("dashBackupBtn");
+  if(backupBtn){
+    backupBtn.addEventListener("click", async function(){
+      backupBtn.disabled = true; backupBtn.textContent = "Erstellt Backup …";
+      try{ await exportFullBackup(); }
+      catch(err){ toast("Fehler beim Backup: " + err.message); }
+      backupBtn.disabled = false; backupBtn.textContent = "Vollständiges Backup";
+    });
+  }
 
   var faelligHost = document.getElementById("dashFaelligHost");
   try{
@@ -1142,11 +1199,12 @@ async function renderTeam(){
   catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
   state.team = team;
 
+  var ROLE_PILL = { owner: "ok", mitarbeiter: "neutral", leser: "warn" };
   var rows = team.length
     ? team.map(function(m){
         var self = state.session && state.session.email === m.email;
         return '<tr><td>' + escapeHtml(m.email) + (self ? ' <span class="cell-sub">(du)</span>' : '') + '</td>' +
-          '<td><span class="pill pill-' + (m.rolle === "owner" ? "ok" : "neutral") + '">' + (m.rolle === "owner" ? "Owner" : "Mitarbeiter") + '</span></td>' +
+          '<td><span class="pill pill-' + (ROLE_PILL[m.rolle] || "neutral") + '">' + (ROLE_LABELS[m.rolle] || m.rolle) + '</span></td>' +
           '<td class="cell-sub">' + formatDate(m.erstellt_am) + '</td>' +
           '<td>' + (self ? "" :
             '<div class="row-actions">' +
@@ -1158,16 +1216,21 @@ async function renderTeam(){
 
   host.innerHTML =
     '<div class="card" style="padding:16px 20px;margin-bottom:14px;color:var(--ink-dim);font-size:.84rem;">' +
-      'Owner haben vollen Zugriff (inkl. Hersteller-/Geräte-Katalog und endgültigem Löschen aus dem Papierkorb). Mitarbeiter sehen alles, können den Katalog aber nicht ändern und nichts endgültig löschen — serverseitig erzwungen, nicht nur im Fenster hier ausgeblendet.' +
+      'Owner haben vollen Zugriff (inkl. Hersteller-/Geräte-Katalog und endgültigem Löschen aus dem Papierkorb). Mitarbeiter sehen und bearbeiten alles, können den Katalog aber nicht ändern und nichts endgültig löschen. Leser können alles ansehen, aber nirgends etwas anlegen, ändern oder löschen — serverseitig erzwungen, nicht nur im Fenster hier ausgeblendet.' +
     '</div>' +
     '<div class="card table-wrap" style="margin-bottom:16px;"><table><thead><tr><th>E-Mail</th><th>Rolle</th><th>Hinzugefügt</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    '<div class="card" style="padding:16px 20px;">' +
+    '<div class="card" style="padding:16px 20px;margin-bottom:16px;">' +
       '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:stretch;">' +
         '<input type="email" id="teamEmail" placeholder="E-Mail der neuen Person" style="flex:1 1 240px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
-        '<select id="teamRolle" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);"><option value="mitarbeiter">Mitarbeiter</option><option value="owner">Owner</option></select>' +
+        '<select id="teamRolle" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);"><option value="mitarbeiter">Mitarbeiter</option><option value="owner">Owner</option><option value="leser">Leser</option></select>' +
         '<button type="button" class="btn btn-sm" id="teamAddBtn">+ Einladen</button>' +
       '</div>' +
+    '</div>' +
+    '<div class="card" style="padding:16px 20px;">' +
+      '<h2 style="font-size:1rem;margin-bottom:12px;">Login-Protokoll</h2>' +
+      '<div id="loginLogHost"><p class="cell-sub">Lade …</p></div>' +
     '</div>';
+  renderLoginLog();
 
   host.querySelectorAll("[data-team-remove]").forEach(function(btn){
     btn.addEventListener("click", async function(){
@@ -1224,11 +1287,12 @@ function renderTable(){
 
 function rowActionsCell(id){
   if(state.showArchived){
+    if(!canWrite()) return '<td><span class="cell-sub">Nur Lesezugriff</span></td></tr>';
     var purgeBtn = state.rolle === "owner" ? '<button class="btn btn-danger btn-sm" data-purge="' + id + '">Endgültig löschen</button>' : "";
     return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-restore="' + id + '">Wiederherstellen</button>' + purgeBtn + '</div></td></tr>';
   }
   if(!canManageCurrentTab()){
-    return '<td><span class="cell-sub">Nur für Owner bearbeitbar</span></td></tr>';
+    return '<td><span class="cell-sub">' + (canWrite() ? "Nur für Owner bearbeitbar" : "Nur Lesezugriff") + '</span></td></tr>';
   }
   return '<td><div class="row-actions"><button class="btn btn-ghost btn-sm" data-edit="' + id + '">Bearbeiten</button><button class="btn btn-danger btn-sm" data-delete="' + id + '">Archivieren</button></div></td></tr>';
 }
@@ -1694,6 +1758,7 @@ async function refreshPositionsHost(projektId){
   }).join("");
 
   var summe = positionen.reduce(function(sum, p){ return sum + (p.menge || 0) * (p.einzelpreis || 0); }, 0);
+  var writable = canWrite();
 
   var rows = positionen.length
     ? positionen.map(function(p){
@@ -1703,7 +1768,7 @@ async function refreshPositionsHost(projektId){
           '<td>' + p.menge + '</td>' +
           '<td>' + formatEuro(p.einzelpreis) + '</td>' +
           '<td>' + formatEuro((p.menge || 0) * (p.einzelpreis || 0)) + '</td>' +
-          '<td><button type="button" class="btn btn-danger btn-sm" data-pos-delete="' + p.id + '">×</button></td></tr>';
+          '<td>' + (writable ? '<button type="button" class="btn btn-danger btn-sm" data-pos-delete="' + p.id + '">×</button>' : '') + '</td></tr>';
       }).join("")
     : '<tr><td colspan="5" class="cell-sub">Noch keine Geräte zu diesem Projekt hinzugefügt.</td></tr>';
 
@@ -1712,11 +1777,12 @@ async function refreshPositionsHost(projektId){
     '<table><thead><tr><th>Gerät</th><th>Menge</th><th>Einzelpreis</th><th>Summe</th><th></th></tr></thead><tbody>' + rows + '</tbody>' +
     (positionen.length ? '<tfoot><tr><td colspan="3" style="text-align:right;font-weight:700;">Gesamt</td><td style="font-weight:700;">' + formatEuro(summe) + '</td><td></td></tr></tfoot>' : '') +
     '</table></div>' +
+    (writable ?
     '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
       '<select id="posGeraetSel" style="flex:1 1 200px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' + geraetSel + '</select>' +
       '<input type="number" id="posMenge" value="1" min="1" style="width:70px;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<button type="button" class="btn btn-ghost btn-sm" id="posAddBtn">+ Hinzufügen</button>' +
-    '</div>';
+    '</div>' : '');
 
   host.querySelectorAll("[data-pos-delete]").forEach(function(btn){
     btn.addEventListener("click", async function(){
@@ -1751,13 +1817,14 @@ async function refreshTermineHost(projektId){
 
   var sichtbare = termine.filter(function(t){ return !!t.archiviert === _terminePapierkorb; });
   var isOwner = state.rolle === "owner";
+  var writable = canWrite();
 
   var rows = sichtbare.length
     ? sichtbare.map(function(t){
         var aktionen = _terminePapierkorb
-          ? ('<button type="button" class="btn btn-ghost btn-sm" data-termin-restore="' + t.id + '">Wiederherstellen</button>' +
-             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-termin-purge="' + t.id + '">Endgültig löschen</button>' : ''))
-          : '<button type="button" class="btn btn-danger btn-sm" data-termin-archive="' + t.id + '">×</button>';
+          ? (writable ? ('<button type="button" class="btn btn-ghost btn-sm" data-termin-restore="' + t.id + '">Wiederherstellen</button>' +
+             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-termin-purge="' + t.id + '">Endgültig löschen</button>' : '')) : '')
+          : (writable ? '<button type="button" class="btn btn-danger btn-sm" data-termin-archive="' + t.id + '">×</button>' : '');
         return '<tr><td>' + formatDateTime(t.datum) + '</td><td>' + escapeHtml(t.titel) + (t.ort ? '<div class="cell-sub">' + escapeHtml(t.ort) + '</div>' : '') + '</td>' +
           '<td>' + aktionen + '</td></tr>';
       }).join("")
@@ -1766,7 +1833,7 @@ async function refreshTermineHost(projektId){
   host.innerHTML =
     '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm" id="terminePapierkorbBtn">' + (_terminePapierkorb ? "Zurück" : "Papierkorb") + '</button></div>' +
     '<div class="table-wrap" style="margin-bottom:10px;border:1px solid var(--line);border-radius:6px;"><table><thead><tr><th>Wann</th><th>Titel / Ort</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
-    (_terminePapierkorb ? '' :
+    (_terminePapierkorb || !writable ? '' :
     '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
       '<input type="datetime-local" id="terminDatum" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<input type="text" id="terminTitel" placeholder="Titel" style="flex:1 1 140px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
@@ -1826,17 +1893,19 @@ async function refreshAufgabenHost(projektId){
   }
   var sichtbare = aufgaben.filter(function(a){ return !!a.archiviert === _aufgabenPapierkorb; });
   var isOwner = state.rolle === "owner";
+  var writable = canWrite();
   var rows = sichtbare.length
     ? sichtbare.map(function(a){
         var aktionen = _aufgabenPapierkorb
-          ? ('<button type="button" class="btn btn-ghost btn-sm" data-aufgabe-restore="' + a.id + '">Wiederherstellen</button>' +
-             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-aufgabe-purge="' + a.id + '">Endgültig löschen</button>' : ''))
-          : '<button type="button" class="btn btn-danger btn-sm" data-aufgabe-archive="' + a.id + '">×</button>';
+          ? (writable ? ('<button type="button" class="btn btn-ghost btn-sm" data-aufgabe-restore="' + a.id + '">Wiederherstellen</button>' +
+             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-aufgabe-purge="' + a.id + '">Endgültig löschen</button>' : '')) : '')
+          : (writable ? '<button type="button" class="btn btn-danger btn-sm" data-aufgabe-archive="' + a.id + '">×</button>' : '');
         return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap;">' +
-          (_aufgabenPapierkorb ? '' : '<input type="checkbox" data-aufgabe-toggle="' + a.id + '"' + (a.erledigt ? " checked" : "") + '>') +
+          (_aufgabenPapierkorb || !writable ? '' : '<input type="checkbox" data-aufgabe-toggle="' + a.id + '"' + (a.erledigt ? " checked" : "") + '>') +
+          (!writable && !_aufgabenPapierkorb ? (a.erledigt ? '<span class="pill pill-ok">Erledigt</span>' : '') : '') +
           '<span style="flex:1;min-width:120px;' + (a.erledigt ? "text-decoration:line-through;color:var(--ink-dim);" : "") + '">' + escapeHtml(a.titel) + '</span>' +
           (a.faellig_am ? '<span class="cell-sub">' + formatDate(a.faellig_am) + '</span>' : '') +
-          (_aufgabenPapierkorb ? '' : assigneeSel(a.zugewiesen_an, "data-aufgabe-assign", a.id)) +
+          (_aufgabenPapierkorb ? '' : (writable ? assigneeSel(a.zugewiesen_an, "data-aufgabe-assign", a.id) : '<span class="cell-sub">' + (a.zugewiesen_an ? escapeHtml(a.zugewiesen_an) : "— niemand —") + '</span>')) +
           aktionen + '</li>';
       }).join("")
     : '<li class="cell-sub">' + (_aufgabenPapierkorb ? "Papierkorb ist leer." : "Keine Aufgaben.") + '</li>';
@@ -1844,7 +1913,7 @@ async function refreshAufgabenHost(projektId){
   host.innerHTML =
     '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm" id="aufgabenPapierkorbBtn">' + (_aufgabenPapierkorb ? "Zurück" : "Papierkorb") + '</button></div>' +
     '<ul style="list-style:none;margin:0 0 10px;padding:0;">' + rows + '</ul>' +
-    (_aufgabenPapierkorb ? '' :
+    (_aufgabenPapierkorb || !writable ? '' :
     '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
       '<input type="text" id="aufgabeTitel" placeholder="Neue Aufgabe" style="flex:1 1 160px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<input type="date" id="aufgabeFaellig" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
@@ -1917,14 +1986,15 @@ async function refreshDateienHost(projektId){
   var byId = {}; dateien.forEach(function(f){ byId[f.id] = f; });
   var sichtbare = dateien.filter(function(f){ return !!f.archiviert === _dateienPapierkorb; });
   var isOwner = state.rolle === "owner";
+  var writable = canWrite();
 
   var rows = sichtbare.length
     ? sichtbare.map(function(f){
         var aktionen = _dateienPapierkorb
-          ? ('<button type="button" class="btn btn-ghost btn-sm" data-datei-restore="' + f.id + '">Wiederherstellen</button>' +
-             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-datei-purge="' + f.id + '">Endgültig löschen</button>' : ''))
+          ? (writable ? ('<button type="button" class="btn btn-ghost btn-sm" data-datei-restore="' + f.id + '">Wiederherstellen</button>' +
+             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-datei-purge="' + f.id + '">Endgültig löschen</button>' : '')) : '')
           : ('<button type="button" class="btn btn-ghost btn-sm" data-datei-download="' + f.id + '">↓</button>' +
-             '<button type="button" class="btn btn-danger btn-sm" data-datei-archive="' + f.id + '">×</button>');
+             (writable ? '<button type="button" class="btn btn-danger btn-sm" data-datei-archive="' + f.id + '">×</button>' : ''));
         return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);">' +
           '<span style="flex:1;">' + escapeHtml(f.dateiname) + '</span>' +
           '<span class="cell-sub">' + formatSize(f.groesse) + ' · ' + formatDate(f.hochgeladen_am) + '</span>' +
@@ -1935,7 +2005,7 @@ async function refreshDateienHost(projektId){
   host.innerHTML =
     '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm" id="dateienPapierkorbBtn">' + (_dateienPapierkorb ? "Zurück" : "Papierkorb") + '</button></div>' +
     '<ul style="list-style:none;margin:0 0 10px;padding:0;">' + rows + '</ul>' +
-    (_dateienPapierkorb ? '' :
+    (_dateienPapierkorb || !writable ? '' :
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
       '<input type="file" id="dateiInput" style="flex:1 1 200px;min-width:0;">' +
       '<button type="button" class="btn btn-ghost btn-sm" id="dateiUploadBtn">Hochladen</button>' +
@@ -2018,6 +2088,7 @@ document.getElementById("loginForm").addEventListener("submit", async function(e
       setTimeout(function(){ document.getElementById("mfaCode").focus(); }, 50);
     }else{
       saveSession({ access_token: tokens.access_token, refresh_token: tokens.refresh_token, email: email });
+      recordLogin(email);
       renderShell();
       await loadAll();
     }
@@ -2037,6 +2108,7 @@ document.getElementById("mfaForm").addEventListener("submit", async function(e){
   try{
     var ver = await mfaChallengeAndVerify(_mfaPending.factorId, f.code.value.trim(), _mfaPending.access_token);
     saveSession({ access_token: ver.access_token, refresh_token: ver.refresh_token, email: _mfaPending.email });
+    recordLogin(_mfaPending.email);
     _mfaPending = null;
     renderShell();
     await loadAll();

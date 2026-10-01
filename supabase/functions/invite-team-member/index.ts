@@ -86,7 +86,7 @@ Deno.serve(async (req: Request) => {
       return jsonResponse({ ok: true, deletedAuthUser: !!authUser });
     }
 
-    const rolle = body.rolle === "owner" ? "owner" : "mitarbeiter";
+    const rolle = ["owner", "mitarbeiter", "leser"].includes(body.rolle) ? body.rolle : "mitarbeiter";
     // Muss die VOLLE URL sein (inkl. Pfad), exakt wie in den Supabase-Auth-
     // "Redirect URLs" eingetragen -- nur die nackte Origin (ohne Pfad)
     // matcht dort nicht, Supabase faellt dann still auf die Site-URL
