@@ -98,6 +98,10 @@ a.link:hover{text-decoration:underline;}
 .toast{position:fixed;bottom:22px;right:22px;background:var(--ink);color:var(--paper);padding:12px 18px;border-radius:8px;font-size:.84rem;font-weight:600;box-shadow:0 10px 30px rgba(0,0,0,.3);z-index:200;opacity:0;transform:translateY(10px);transition:opacity .2s ease, transform .2s ease;pointer-events:none;}
 .toast.show{opacity:1;transform:translateY(0);}
 [hidden]{display:none!important;}
+.combobox-dropdown{position:absolute;top:100%;left:0;right:0;z-index:50;background:var(--card);border:1px solid var(--line);border-radius:6px;max-height:220px;overflow-y:auto;box-shadow:0 10px 24px rgba(0,0,0,.15);margin-top:4px;}
+.combobox-dropdown div{padding:8px 11px;font-size:.86rem;cursor:pointer;}
+.combobox-dropdown div:hover{background:var(--brass-bg);}
+.combobox-dropdown .cell-sub{padding:8px 11px;cursor:default;}
 #securityHost svg{width:180px!important;height:180px!important;}
 @media (max-width:720px){ .field-row{grid-template-columns:1fr;} }
 </style>
@@ -1345,6 +1349,32 @@ function wireRowActions(){
 }
 
 /* ---------- Formular je Tab ---------- */
+function wireCombobox(cfg){
+  var input = document.getElementById(cfg.inputId);
+  var hidden = document.getElementById(cfg.hiddenId);
+  var dropdown = document.getElementById(cfg.dropdownId);
+  function render(filter){
+    var f = (filter || "").trim().toLowerCase();
+    var matches = cfg.items.filter(function(it){ return !f || it.label.toLowerCase().indexOf(f) !== -1; });
+    var html = '<div data-cb-id="">— Kein(e) Auswahl —</div>' +
+      matches.map(function(it){ return '<div data-cb-id="' + it.id + '">' + escapeHtml(it.label) + '</div>'; }).join("") +
+      (matches.length ? "" : '<div class="cell-sub">Keine Treffer.</div>');
+    dropdown.innerHTML = html;
+    dropdown.querySelectorAll("[data-cb-id]").forEach(function(el){
+      el.addEventListener("mousedown", function(e){
+        e.preventDefault();
+        hidden.value = el.dataset.cbId;
+        input.value = el.dataset.cbId ? el.textContent : "";
+        dropdown.hidden = true;
+      });
+    });
+  }
+  input.addEventListener("input", function(){ hidden.value = ""; render(input.value); dropdown.hidden = false; });
+  input.addEventListener("focus", function(){ render(input.value); dropdown.hidden = false; });
+  input.addEventListener("blur", function(){ setTimeout(function(){ dropdown.hidden = true; }, 150); });
+  hidden.value = cfg.initialId || "";
+  input.value = cfg.initialLabel || "";
+}
 function opts(list, val){
   return list.map(function(o){ return '<option value="' + escapeHtml(o) + '"' + (val === o ? " selected" : "") + '>' + (o || "—") + '</option>'; }).join("");
 }
@@ -1589,9 +1619,11 @@ async function openProjektForm(existing){
   var kundeSel = '<option value="">— kein Kunde —</option>' + state.kunden.filter(function(k){ return !k.archiviert || k.id === d.kunde_id || (d.kunden && k.id === d.kunden.id); }).map(function(k){
     return '<option value="' + k.id + '"' + (d.kunde_id === k.id || (d.kunden && d.kunden.id === k.id) ? " selected" : "") + '>' + escapeHtml(k.name) + ' (' + escapeHtml(k.email) + ')' + (k.archiviert ? " (archiviert)" : "") + '</option>';
   }).join("");
-  var partnerSel = '<option value="">— kein Montage-Partner —</option>' + state.partner.filter(function(p){ return !p.archiviert || p.id === d.montage_partner_id || (d.montage_partner && p.id === d.montage_partner.id); }).map(function(p){
-    return '<option value="' + p.id + '"' + (d.montage_partner_id === p.id || (d.montage_partner && d.montage_partner.id === p.id) ? " selected" : "") + '>' + escapeHtml(p.name) + ' (' + escapeHtml(p.typ) + ')' + (p.archiviert ? " (archiviert)" : "") + '</option>';
-  }).join("");
+  var partnerItems = state.partner.filter(function(p){ return !p.archiviert || p.id === d.montage_partner_id || (d.montage_partner && p.id === d.montage_partner.id); }).map(function(p){
+    return { id: p.id, label: p.name + " (" + p.typ + ")" + (p.archiviert ? " (archiviert)" : "") };
+  });
+  var selectedPartnerId = d.montage_partner_id || (d.montage_partner ? d.montage_partner.id : "");
+  var selectedPartnerItem = partnerItems.filter(function(it){ return it.id === selectedPartnerId; })[0];
 
   var positionenBlock = existing
     ? '<div class="field"><label>Bestellte Geräte</label><div id="positionsHost"></div></div>'
@@ -1610,7 +1642,11 @@ async function openProjektForm(existing){
         '<div class="field"><label>Paket</label><select name="paket">' + opts(PAKET_OPTIONS, d.paket) + '</select></div></div>' +
         '<div class="field-row"><div class="field"><label>Geschätzte Summe (€)</label><input type="number" name="summe" step="1" value="' + (d.summe == null ? "" : d.summe) + '"></div>' +
         '<div class="field"><label>Zuständig (intern)</label><input name="zustaendig" value="' + escapeHtml(d.zustaendig) + '"></div></div>' +
-        '<div class="field"><label>Montage-Partner</label><select name="montage_partner_id">' + partnerSel + '</select></div>' +
+        '<div class="field" style="position:relative;"><label>Montage-Partner</label>' +
+          '<input type="text" id="partnerSearch" autocomplete="off" placeholder="Suchen oder leer lassen …">' +
+          '<input type="hidden" name="montage_partner_id" id="partnerId">' +
+          '<div id="partnerDropdown" class="combobox-dropdown" hidden></div>' +
+        '</div>' +
         '<div class="field"><label>Notizen</label><textarea name="notizen">' + escapeHtml(d.notizen) + '</textarea></div>' +
         positionenBlock +
         termineBlock +
@@ -1620,6 +1656,10 @@ async function openProjektForm(existing){
         '<div class="modal-actions"><button type="button" class="btn btn-ghost" id="cancelBtn">Abbrechen</button><button type="submit" class="btn">Speichern</button></div>' +
       '</form></div></div>';
   bindFormClose();
+  wireCombobox({
+    inputId: "partnerSearch", hiddenId: "partnerId", dropdownId: "partnerDropdown",
+    items: partnerItems, initialId: selectedPartnerId, initialLabel: selectedPartnerItem ? selectedPartnerItem.label : ""
+  });
   document.getElementById("entityForm").addEventListener("submit", async function(e){
     e.preventDefault();
     var f = e.target;
