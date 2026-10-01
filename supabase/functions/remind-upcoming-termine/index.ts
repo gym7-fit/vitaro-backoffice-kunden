@@ -42,10 +42,9 @@ function emailShell(preheader: string, bodyHtml: string): string {
     '<tr><td style="padding:26px 32px 16px;border-bottom:3px solid #a68a73;">' +
     '<a href="https://gym7-fit.github.io/vitaro-homegym-preview/" style="text-decoration:none;display:inline-block;">' +
     '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;font-weight:600;letter-spacing:4px;color:#1b1712;">VITARO</div>' +
-    '<table role="presentation" width="130" cellpadding="0" cellspacing="0" style="margin-top:4px;"><tr>' +
-    '<td style="font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#6e6357;text-align:left;">HOME</td>' +
-    '<td style="font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#6e6357;text-align:right;">GYMS</td>' +
-    '</tr></table>' +
+    '<div style="font-size:10px;font-weight:700;text-transform:uppercase;color:#6e6357;margin-top:4px;">' +
+    '<span style="letter-spacing:1.015em;margin-right:0.85em;">HOME</span><span style="letter-spacing:1.015em;">GYMS</span>' +
+    '</div>' +
     '</a>' +
     '</td></tr>' +
     '<tr><td style="padding:26px 32px 30px;font-size:14px;line-height:1.6;color:#1b1712;">' + bodyHtml + '</td></tr>' +
