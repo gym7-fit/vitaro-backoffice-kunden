@@ -37,6 +37,34 @@ const GMAIL_APP_PASSWORD = Deno.env.get("GMAIL_APP_PASSWORD") || "";
 const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || "";
 const NOTIFY_EMAIL = Deno.env.get("NOTIFY_EMAIL") || GMAIL_USER;
 
+// ---------- VITARO-Markenlook fuer HTML-Mails (dieselben Farben/Schriften
+// wie auf der oeffentlichen Website, assets/css/style.css: --bg, --card,
+// --text, --text-dim, --accent, --accent-2, Playfair Display + Inter) ----------
+function escapeHtml(s: unknown): string {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function emailShell(preheader: string, bodyHtml: string): string {
+  return (
+    '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
+    '<body style="margin:0;padding:0;background-color:#f7f1e6;">' +
+    '<div style="display:none;max-height:0;overflow:hidden;">' + escapeHtml(preheader) + '</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f7f1e6;padding:32px 16px;"><tr><td align="center">' +
+    '<table role="presentation" width="100%" style="max-width:480px;" cellpadding="0" cellspacing="0"><tr><td style="background-color:#fffdf8;border:1px solid rgba(27,21,14,0.12);border-radius:8px;overflow:hidden;font-family:-apple-system,\'Helvetica Neue\',Arial,sans-serif;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' +
+    '<tr><td style="padding:26px 32px 16px;border-bottom:3px solid #a68a73;">' +
+    '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;font-weight:600;letter-spacing:4px;color:#1b1712;">VITARO</div>' +
+    '<div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#6e6357;margin-top:3px;">Home Gyms</div>' +
+    '</td></tr>' +
+    '<tr><td style="padding:26px 32px 30px;font-size:14px;line-height:1.6;color:#1b1712;">' + bodyHtml + '</td></tr>' +
+    '</table></td></tr>' +
+    '<tr><td style="padding:16px 8px 0;text-align:center;font-size:11px;color:#6e6357;font-family:-apple-system,\'Helvetica Neue\',Arial,sans-serif;">VITARO Home Gyms</td></tr>' +
+    '</table></td></tr></table></body></html>'
+  );
+}
+function brandButton(href: string, label: string): string {
+  return '<p style="margin:22px 0 0;"><a href="' + href + '" style="display:inline-block;background:#1b1712;color:#fffdf8;text-decoration:none;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:700;">' + escapeHtml(label) + '</a></p>';
+}
+
 Deno.serve(async (req: Request) => {
   if (req.method !== "POST") return new Response("Nur POST erlaubt.", { status: 405 });
 
@@ -67,12 +95,22 @@ Deno.serve(async (req: Request) => {
       "",
       "Im Backoffice ansehen: https://gym7-fit.github.io/vitaro-backoffice-kunden/",
     ];
+    const internBodyHtml =
+      '<p style="margin:0 0 16px;font-weight:700;">Neue Anfrage:</p>' +
+      '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="font-size:14px;">' +
+      '<tr><td style="padding:4px 0;color:#6e6357;width:90px;">Name</td><td style="padding:4px 0;">' + escapeHtml(kunde.name || "—") + '</td></tr>' +
+      '<tr><td style="padding:4px 0;color:#6e6357;">E-Mail</td><td style="padding:4px 0;">' + escapeHtml(kunde.email || "—") + '</td></tr>' +
+      '<tr><td style="padding:4px 0;color:#6e6357;">Telefon</td><td style="padding:4px 0;">' + escapeHtml(kunde.telefon || "—") + '</td></tr>' +
+      '<tr><td style="padding:4px 0;color:#6e6357;">Quelle</td><td style="padding:4px 0;">' + escapeHtml(kunde.quelle || "—") + '</td></tr>' +
+      '</table>' +
+      brandButton("https://gym7-fit.github.io/vitaro-backoffice-kunden/", "Im Backoffice ansehen");
 
     await client.send({
       from: GMAIL_USER,
       to: NOTIFY_EMAIL,
       subject: "Neue VITARO-Anfrage: " + (kunde.name || kunde.email || "unbekannt"),
       content: zeilen.join("\n"),
+      html: emailShell("Neue Anfrage: " + (kunde.name || kunde.email || "unbekannt"), internBodyHtml),
     });
 
     const CUSTOMER_QUELLEN = ["Kontaktformular", "Planer-Registrierung"];
@@ -88,11 +126,16 @@ Deno.serve(async (req: Request) => {
           "Mit freundlichen Grüßen",
           "Ihr VITARO-Team",
         ];
+        const kundenBodyHtml =
+          '<p style="margin:0 0 16px;">' + escapeHtml(gruss) + '</p>' +
+          '<p style="margin:0 0 16px;">Vielen Dank für Ihre Anfrage bei VITARO Home Gyms. Wir haben sie erhalten und melden uns in Kürze bei Ihnen.</p>' +
+          '<p style="margin:0;">Mit freundlichen Grüßen<br>Ihr VITARO-Team</p>';
         await client.send({
           from: GMAIL_USER,
           to: kunde.email,
           subject: "Ihre Anfrage bei VITARO Home Gym",
           content: kundenZeilen.join("\n"),
+          html: emailShell("Vielen Dank für Ihre Anfrage bei VITARO Home Gyms.", kundenBodyHtml),
         });
         customerMailSent = true;
       } catch (custErr) {

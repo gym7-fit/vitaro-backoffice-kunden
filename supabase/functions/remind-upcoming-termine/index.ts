@@ -26,6 +26,33 @@ const GMAIL_APP_PASSWORD = Deno.env.get("GMAIL_APP_PASSWORD") || "";
 const WEBHOOK_SECRET = Deno.env.get("WEBHOOK_SECRET") || "";
 const NOTIFY_EMAIL = Deno.env.get("NOTIFY_EMAIL") || GMAIL_USER;
 
+// ---------- VITARO-Markenlook fuer HTML-Mails (dieselben Farben/Schriften
+// wie auf der oeffentlichen Website, assets/css/style.css) ----------
+function escapeHtml(s: unknown): string {
+  return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function emailShell(preheader: string, bodyHtml: string): string {
+  return (
+    '<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>' +
+    '<body style="margin:0;padding:0;background-color:#f7f1e6;">' +
+    '<div style="display:none;max-height:0;overflow:hidden;">' + escapeHtml(preheader) + '</div>' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f7f1e6;padding:32px 16px;"><tr><td align="center">' +
+    '<table role="presentation" width="100%" style="max-width:480px;" cellpadding="0" cellspacing="0"><tr><td style="background-color:#fffdf8;border:1px solid rgba(27,21,14,0.12);border-radius:8px;overflow:hidden;font-family:-apple-system,\'Helvetica Neue\',Arial,sans-serif;">' +
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' +
+    '<tr><td style="padding:26px 32px 16px;border-bottom:3px solid #a68a73;">' +
+    '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;font-weight:600;letter-spacing:4px;color:#1b1712;">VITARO</div>' +
+    '<div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#6e6357;margin-top:3px;">Home Gyms</div>' +
+    '</td></tr>' +
+    '<tr><td style="padding:26px 32px 30px;font-size:14px;line-height:1.6;color:#1b1712;">' + bodyHtml + '</td></tr>' +
+    '</table></td></tr>' +
+    '<tr><td style="padding:16px 8px 0;text-align:center;font-size:11px;color:#6e6357;font-family:-apple-system,\'Helvetica Neue\',Arial,sans-serif;">VITARO Home Gyms</td></tr>' +
+    '</table></td></tr></table></body></html>'
+  );
+}
+function brandButton(href: string, label: string): string {
+  return '<p style="margin:22px 0 0;"><a href="' + href + '" style="display:inline-block;background:#1b1712;color:#fffdf8;text-decoration:none;padding:10px 18px;border-radius:6px;font-size:13px;font-weight:700;">' + escapeHtml(label) + '</a></p>';
+}
+
 Deno.serve(async (req: Request) => {
   if (!WEBHOOK_SECRET || req.headers.get("x-webhook-secret") !== WEBHOOK_SECRET) {
     return new Response("Unauthorized", { status: 401 });
@@ -65,6 +92,16 @@ Deno.serve(async (req: Request) => {
       "",
       "Im Backoffice ansehen: https://gym7-fit.github.io/vitaro-backoffice-kunden/",
     ];
+    const bodyHtml =
+      '<p style="margin:0 0 16px;font-weight:700;">Anstehende Termine in den nächsten 24 Stunden:</p>' +
+      '<ul style="margin:0 0 6px;padding-left:18px;">' +
+      termine.map((t: any) => {
+        const kundeName = t.projekte && t.projekte.kunden ? t.projekte.kunden.name : "—";
+        const wann = new Date(t.datum).toLocaleString("de-DE", { dateStyle: "medium", timeStyle: "short" });
+        return '<li style="margin-bottom:8px;">' + escapeHtml(wann) + ' &middot; ' + escapeHtml(t.titel) + ' &middot; ' + escapeHtml(kundeName) + (t.ort ? ' &middot; ' + escapeHtml(t.ort) : '') + '</li>';
+      }).join("") +
+      '</ul>' +
+      brandButton("https://gym7-fit.github.io/vitaro-backoffice-kunden/", "Im Backoffice ansehen");
 
     const client = new SMTPClient({
       connection: {
@@ -79,6 +116,7 @@ Deno.serve(async (req: Request) => {
       to: NOTIFY_EMAIL,
       subject: "VITARO: " + termine.length + " Termin(e) in den naechsten 24 Stunden",
       content: zeilen.join("\n"),
+      html: emailShell(termine.length + " Termin(e) in den naechsten 24 Stunden", bodyHtml),
     });
     await client.close();
 
