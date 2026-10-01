@@ -72,6 +72,7 @@ Deno.serve(async (req: Request) => {
     const url =
       SUPABASE_URL +
       "/rest/v1/termine?select=*,projekte(kunden(name))" +
+      "&archiviert=eq.false" +
       "&datum=gte." + encodeURIComponent(now.toISOString()) +
       "&datum=lt." + encodeURIComponent(in24h.toISOString()) +
       "&order=datum.asc";

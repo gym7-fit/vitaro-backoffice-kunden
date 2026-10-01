@@ -618,6 +618,14 @@ async function deleteTermin(id){
   var res = await api("/termine?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
+async function archiveTermin(id){
+  var res = await api("/termine?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: true }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function restoreTermin(id){
+  var res = await api("/termine?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: false }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
 
 /* ---------- Aufgaben ---------- */
 async function loadAufgaben(projektId){
@@ -644,14 +652,22 @@ async function deleteAufgabe(id){
   var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
+async function archiveAufgabe(id){
+  var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: true }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function restoreAufgabe(id){
+  var res = await api("/aufgaben?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: false }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
 async function loadOffeneAufgabenAlle(){
-  var res = await api("/aufgaben?erledigt=eq.false&select=*,projekte(id,kunden(name))&order=faellig_am.asc.nullslast&limit=8");
+  var res = await api("/aufgaben?erledigt=eq.false&archiviert=eq.false&select=*,projekte(id,kunden(name))&order=faellig_am.asc.nullslast&limit=8");
   if(!res.ok) throw new Error("HTTP " + res.status);
   return await res.json();
 }
 async function loadAnstehendeTermineAlle(){
   var nowIso = new Date().toISOString();
-  var res = await api("/termine?datum=gte." + encodeURIComponent(nowIso) + "&select=*,projekte(id,kunden(name))&order=datum.asc&limit=8");
+  var res = await api("/termine?datum=gte." + encodeURIComponent(nowIso) + "&archiviert=eq.false&select=*,projekte(id,kunden(name))&order=datum.asc&limit=8");
   if(!res.ok) throw new Error("HTTP " + res.status);
   return await res.json();
 }
@@ -671,6 +687,14 @@ async function addDateiRecord(projektId, dateiname, storagePath, groesse){
 }
 async function deleteDateiRecord(id){
   var res = await api("/projekt_dateien?id=eq." + encodeURIComponent(id), { method:"DELETE", headers:{"Prefer":"return=minimal"} });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function archiveDateiRecord(id){
+  var res = await api("/projekt_dateien?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: true }) });
+  if(!res.ok) throw new Error("HTTP " + res.status);
+}
+async function restoreDateiRecord(id){
+  var res = await api("/projekt_dateien?id=eq." + encodeURIComponent(id), { method:"PATCH", headers:{"Prefer":"return=minimal"}, body: JSON.stringify({ archiviert: false }) });
   if(!res.ok) throw new Error("HTTP " + res.status);
 }
 
@@ -1611,6 +1635,7 @@ async function openProjektForm(existing){
   if(existing){
     await refreshPositionsHost(existing.id);
     renderStatusHistoryInto(document.getElementById("statusHistoryHost"), "projekte", existing.id);
+    _terminePapierkorb = false; _aufgabenPapierkorb = false; _dateienPapierkorb = false;
     await refreshTermineHost(existing.id);
     await refreshAufgabenHost(existing.id);
     await refreshDateienHost(existing.id);
@@ -1676,6 +1701,7 @@ async function refreshPositionsHost(projektId){
 }
 
 /* ---------- Termine/Aufgaben/Dateien im Projekt-Dialog ---------- */
+var _terminePapierkorb = false;
 async function refreshTermineHost(projektId){
   var host = document.getElementById("termineHost");
   if(!host) return;
@@ -1683,38 +1709,68 @@ async function refreshTermineHost(projektId){
   try{ termine = await loadTermine(projektId); }
   catch(err){ host.innerHTML = '<p class="err">Fehler beim Laden: ' + escapeHtml(err.message) + '</p>'; return; }
 
-  var rows = termine.length
-    ? termine.map(function(t){
+  var sichtbare = termine.filter(function(t){ return !!t.archiviert === _terminePapierkorb; });
+  var isOwner = state.rolle === "owner";
+
+  var rows = sichtbare.length
+    ? sichtbare.map(function(t){
+        var aktionen = _terminePapierkorb
+          ? ('<button type="button" class="btn btn-ghost btn-sm" data-termin-restore="' + t.id + '">Wiederherstellen</button>' +
+             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-termin-purge="' + t.id + '">Endgültig löschen</button>' : ''))
+          : '<button type="button" class="btn btn-danger btn-sm" data-termin-archive="' + t.id + '">×</button>';
         return '<tr><td>' + formatDateTime(t.datum) + '</td><td>' + escapeHtml(t.titel) + (t.ort ? '<div class="cell-sub">' + escapeHtml(t.ort) + '</div>' : '') + '</td>' +
-          '<td><button type="button" class="btn btn-danger btn-sm" data-termin-delete="' + t.id + '">×</button></td></tr>';
+          '<td>' + aktionen + '</td></tr>';
       }).join("")
-    : '<tr><td colspan="3" class="cell-sub">Keine Termine.</td></tr>';
+    : '<tr><td colspan="3" class="cell-sub">' + (_terminePapierkorb ? "Papierkorb ist leer." : "Keine Termine.") + '</td></tr>';
 
   host.innerHTML =
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm" id="terminePapierkorbBtn">' + (_terminePapierkorb ? "Zurück" : "Papierkorb") + '</button></div>' +
     '<div class="table-wrap" style="margin-bottom:10px;border:1px solid var(--line);border-radius:6px;"><table><thead><tr><th>Wann</th><th>Titel / Ort</th><th></th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    (_terminePapierkorb ? '' :
     '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
       '<input type="datetime-local" id="terminDatum" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<input type="text" id="terminTitel" placeholder="Titel" style="flex:1 1 140px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<input type="text" id="terminOrt" placeholder="Ort (optional)" style="flex:1 1 120px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<button type="button" class="btn btn-ghost btn-sm" id="terminAddBtn">+ Termin</button>' +
-    '</div>';
+    '</div>');
 
-  host.querySelectorAll("[data-termin-delete]").forEach(function(btn){
+  document.getElementById("terminePapierkorbBtn").addEventListener("click", function(){
+    _terminePapierkorb = !_terminePapierkorb;
+    refreshTermineHost(projektId);
+  });
+  host.querySelectorAll("[data-termin-archive]").forEach(function(btn){
     btn.addEventListener("click", async function(){
-      try{ await deleteTermin(btn.dataset.terminDelete); await refreshTermineHost(projektId); }
+      try{ await archiveTermin(btn.dataset.terminArchive); await refreshTermineHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-termin-restore]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await restoreTermin(btn.dataset.terminRestore); await refreshTermineHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-termin-purge]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      if(!confirm("Diesen Termin wirklich unwiderruflich löschen?")) return;
+      try{ await deleteTermin(btn.dataset.terminPurge); await refreshTermineHost(projektId); }
       catch(err){ toast("Fehler beim Löschen: " + err.message); }
     });
   });
-  document.getElementById("terminAddBtn").addEventListener("click", async function(){
-    var datumEl = document.getElementById("terminDatum"), titelEl = document.getElementById("terminTitel"), ortEl = document.getElementById("terminOrt");
-    if(!datumEl.value || !titelEl.value.trim()){ toast("Bitte Datum und Titel angeben."); return; }
-    try{
-      await addTermin(projektId, titelEl.value.trim(), new Date(datumEl.value).toISOString(), ortEl.value.trim());
-      await refreshTermineHost(projektId);
-    }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
-  });
+  var terminAddBtn = document.getElementById("terminAddBtn");
+  if(terminAddBtn){
+    terminAddBtn.addEventListener("click", async function(){
+      var datumEl = document.getElementById("terminDatum"), titelEl = document.getElementById("terminTitel"), ortEl = document.getElementById("terminOrt");
+      if(!datumEl.value || !titelEl.value.trim()){ toast("Bitte Datum und Titel angeben."); return; }
+      try{
+        await addTermin(projektId, titelEl.value.trim(), new Date(datumEl.value).toISOString(), ortEl.value.trim());
+        await refreshTermineHost(projektId);
+      }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+    });
+  }
 }
 
+var _aufgabenPapierkorb = false;
 async function refreshAufgabenHost(projektId){
   var host = document.getElementById("aufgabenHost");
   if(!host) return;
@@ -1728,26 +1784,38 @@ async function refreshAufgabenHost(projektId){
     }).join("");
     return '<select ' + idPrefix + '="' + i + '" style="padding:5px 7px;border:1px solid var(--line);border-radius:5px;background:var(--paper);color:var(--ink);font-size:.76rem;max-width:170px;">' + opts + '</select>';
   }
-  var rows = aufgaben.length
-    ? aufgaben.map(function(a){
+  var sichtbare = aufgaben.filter(function(a){ return !!a.archiviert === _aufgabenPapierkorb; });
+  var isOwner = state.rolle === "owner";
+  var rows = sichtbare.length
+    ? sichtbare.map(function(a){
+        var aktionen = _aufgabenPapierkorb
+          ? ('<button type="button" class="btn btn-ghost btn-sm" data-aufgabe-restore="' + a.id + '">Wiederherstellen</button>' +
+             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-aufgabe-purge="' + a.id + '">Endgültig löschen</button>' : ''))
+          : '<button type="button" class="btn btn-danger btn-sm" data-aufgabe-archive="' + a.id + '">×</button>';
         return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);flex-wrap:wrap;">' +
-          '<input type="checkbox" data-aufgabe-toggle="' + a.id + '"' + (a.erledigt ? " checked" : "") + '>' +
+          (_aufgabenPapierkorb ? '' : '<input type="checkbox" data-aufgabe-toggle="' + a.id + '"' + (a.erledigt ? " checked" : "") + '>') +
           '<span style="flex:1;min-width:120px;' + (a.erledigt ? "text-decoration:line-through;color:var(--ink-dim);" : "") + '">' + escapeHtml(a.titel) + '</span>' +
           (a.faellig_am ? '<span class="cell-sub">' + formatDate(a.faellig_am) + '</span>' : '') +
-          assigneeSel(a.zugewiesen_an, "data-aufgabe-assign", a.id) +
-          '<button type="button" class="btn btn-danger btn-sm" data-aufgabe-delete="' + a.id + '">×</button></li>';
+          (_aufgabenPapierkorb ? '' : assigneeSel(a.zugewiesen_an, "data-aufgabe-assign", a.id)) +
+          aktionen + '</li>';
       }).join("")
-    : '<li class="cell-sub">Keine Aufgaben.</li>';
+    : '<li class="cell-sub">' + (_aufgabenPapierkorb ? "Papierkorb ist leer." : "Keine Aufgaben.") + '</li>';
 
   host.innerHTML =
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm" id="aufgabenPapierkorbBtn">' + (_aufgabenPapierkorb ? "Zurück" : "Papierkorb") + '</button></div>' +
     '<ul style="list-style:none;margin:0 0 10px;padding:0;">' + rows + '</ul>' +
+    (_aufgabenPapierkorb ? '' :
     '<div style="display:flex;gap:8px;align-items:stretch;flex-wrap:wrap;">' +
       '<input type="text" id="aufgabeTitel" placeholder="Neue Aufgabe" style="flex:1 1 160px;min-width:0;padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       '<input type="date" id="aufgabeFaellig" style="padding:8px;border:1px solid var(--line);border-radius:6px;background:var(--paper);color:var(--ink);">' +
       assigneeSel("", "id", "aufgabeZugewiesen") +
       '<button type="button" class="btn btn-ghost btn-sm" id="aufgabeAddBtn">+ Aufgabe</button>' +
-    '</div>';
+    '</div>');
 
+  document.getElementById("aufgabenPapierkorbBtn").addEventListener("click", function(){
+    _aufgabenPapierkorb = !_aufgabenPapierkorb;
+    refreshAufgabenHost(projektId);
+  });
   host.querySelectorAll("[data-aufgabe-toggle]").forEach(function(cb){
     cb.addEventListener("change", async function(){
       try{ await toggleAufgabe(cb.dataset.aufgabeToggle, cb.checked); await refreshAufgabenHost(projektId); }
@@ -1760,22 +1828,39 @@ async function refreshAufgabenHost(projektId){
       catch(err){ toast("Fehler: " + err.message); }
     });
   });
-  host.querySelectorAll("[data-aufgabe-delete]").forEach(function(btn){
+  host.querySelectorAll("[data-aufgabe-archive]").forEach(function(btn){
     btn.addEventListener("click", async function(){
-      try{ await deleteAufgabe(btn.dataset.aufgabeDelete); await refreshAufgabenHost(projektId); }
+      try{ await archiveAufgabe(btn.dataset.aufgabeArchive); await refreshAufgabenHost(projektId); }
       catch(err){ toast("Fehler beim Löschen: " + err.message); }
     });
   });
-  document.getElementById("aufgabeAddBtn").addEventListener("click", async function(){
-    var titelEl = document.getElementById("aufgabeTitel"), faelligEl = document.getElementById("aufgabeFaellig"), zugewiesenEl = document.getElementById("aufgabeZugewiesen");
-    if(!titelEl.value.trim()){ toast("Bitte einen Titel angeben."); return; }
-    try{
-      await addAufgabe(projektId, titelEl.value.trim(), faelligEl.value || null, zugewiesenEl ? zugewiesenEl.value : "");
-      await refreshAufgabenHost(projektId);
-    }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+  host.querySelectorAll("[data-aufgabe-restore]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await restoreAufgabe(btn.dataset.aufgabeRestore); await refreshAufgabenHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
   });
+  host.querySelectorAll("[data-aufgabe-purge]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      if(!confirm("Diese Aufgabe wirklich unwiderruflich löschen?")) return;
+      try{ await deleteAufgabe(btn.dataset.aufgabePurge); await refreshAufgabenHost(projektId); }
+      catch(err){ toast("Fehler beim Löschen: " + err.message); }
+    });
+  });
+  var aufgabeAddBtn = document.getElementById("aufgabeAddBtn");
+  if(aufgabeAddBtn){
+    aufgabeAddBtn.addEventListener("click", async function(){
+      var titelEl = document.getElementById("aufgabeTitel"), faelligEl = document.getElementById("aufgabeFaellig"), zugewiesenEl = document.getElementById("aufgabeZugewiesen");
+      if(!titelEl.value.trim()){ toast("Bitte einen Titel angeben."); return; }
+      try{
+        await addAufgabe(projektId, titelEl.value.trim(), faelligEl.value || null, zugewiesenEl ? zugewiesenEl.value : "");
+        await refreshAufgabenHost(projektId);
+      }catch(err){ toast("Fehler beim Hinzufügen: " + err.message); }
+    });
+  }
 }
 
+var _dateienPapierkorb = false;
 async function refreshDateienHost(projektId){
   var host = document.getElementById("dateienHost");
   if(!host) return;
@@ -1790,24 +1875,36 @@ async function refreshDateienHost(projektId){
     return (n / 1024 / 1024).toFixed(1) + " MB";
   }
   var byId = {}; dateien.forEach(function(f){ byId[f.id] = f; });
+  var sichtbare = dateien.filter(function(f){ return !!f.archiviert === _dateienPapierkorb; });
+  var isOwner = state.rolle === "owner";
 
-  var rows = dateien.length
-    ? dateien.map(function(f){
+  var rows = sichtbare.length
+    ? sichtbare.map(function(f){
+        var aktionen = _dateienPapierkorb
+          ? ('<button type="button" class="btn btn-ghost btn-sm" data-datei-restore="' + f.id + '">Wiederherstellen</button>' +
+             (isOwner ? ' <button type="button" class="btn btn-danger btn-sm" data-datei-purge="' + f.id + '">Endgültig löschen</button>' : ''))
+          : ('<button type="button" class="btn btn-ghost btn-sm" data-datei-download="' + f.id + '">↓</button>' +
+             '<button type="button" class="btn btn-danger btn-sm" data-datei-archive="' + f.id + '">×</button>');
         return '<li style="display:flex;align-items:center;gap:8px;padding:6px 0;border-bottom:1px solid var(--line);">' +
           '<span style="flex:1;">' + escapeHtml(f.dateiname) + '</span>' +
           '<span class="cell-sub">' + formatSize(f.groesse) + ' · ' + formatDate(f.hochgeladen_am) + '</span>' +
-          '<button type="button" class="btn btn-ghost btn-sm" data-datei-download="' + f.id + '">↓</button>' +
-          '<button type="button" class="btn btn-danger btn-sm" data-datei-delete="' + f.id + '">×</button></li>';
+          aktionen + '</li>';
       }).join("")
-    : '<li class="cell-sub">Keine Dateien.</li>';
+    : '<li class="cell-sub">' + (_dateienPapierkorb ? "Papierkorb ist leer." : "Keine Dateien.") + '</li>';
 
   host.innerHTML =
+    '<div style="display:flex;justify-content:flex-end;margin-bottom:6px;"><button type="button" class="btn btn-ghost btn-sm" id="dateienPapierkorbBtn">' + (_dateienPapierkorb ? "Zurück" : "Papierkorb") + '</button></div>' +
     '<ul style="list-style:none;margin:0 0 10px;padding:0;">' + rows + '</ul>' +
+    (_dateienPapierkorb ? '' :
     '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">' +
       '<input type="file" id="dateiInput" style="flex:1 1 200px;min-width:0;">' +
       '<button type="button" class="btn btn-ghost btn-sm" id="dateiUploadBtn">Hochladen</button>' +
-    '</div>';
+    '</div>');
 
+  document.getElementById("dateienPapierkorbBtn").addEventListener("click", function(){
+    _dateienPapierkorb = !_dateienPapierkorb;
+    refreshDateienHost(projektId);
+  });
   host.querySelectorAll("[data-datei-download]").forEach(function(btn){
     btn.addEventListener("click", async function(){
       var f = byId[btn.dataset.dateiDownload];
@@ -1822,10 +1919,22 @@ async function refreshDateienHost(projektId){
       btn.disabled = false;
     });
   });
-  host.querySelectorAll("[data-datei-delete]").forEach(function(btn){
+  host.querySelectorAll("[data-datei-archive]").forEach(function(btn){
     btn.addEventListener("click", async function(){
-      var f = byId[btn.dataset.dateiDelete];
-      if(!confirm('"' + f.dateiname + '" wirklich löschen?')) return;
+      try{ await archiveDateiRecord(btn.dataset.dateiArchive); await refreshDateienHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-datei-restore]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      try{ await restoreDateiRecord(btn.dataset.dateiRestore); await refreshDateienHost(projektId); }
+      catch(err){ toast("Fehler: " + err.message); }
+    });
+  });
+  host.querySelectorAll("[data-datei-purge]").forEach(function(btn){
+    btn.addEventListener("click", async function(){
+      var f = byId[btn.dataset.dateiPurge];
+      if(!confirm('"' + f.dateiname + '" wirklich endgültig löschen?')) return;
       try{
         await storageDelete(f.storage_path);
         await deleteDateiRecord(f.id);
@@ -1833,19 +1942,22 @@ async function refreshDateienHost(projektId){
       }catch(err){ toast("Fehler beim Löschen: " + err.message); }
     });
   });
-  document.getElementById("dateiUploadBtn").addEventListener("click", async function(){
-    var input = document.getElementById("dateiInput");
-    var file = input.files[0];
-    if(!file){ toast("Bitte eine Datei auswählen."); return; }
-    var btn = document.getElementById("dateiUploadBtn");
-    btn.disabled = true; btn.textContent = "Lädt hoch …";
-    try{
-      var path = projektId + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
-      await storageUpload(path, file);
-      await addDateiRecord(projektId, file.name, path, file.size);
-      await refreshDateienHost(projektId);
-    }catch(err){ toast("Fehler beim Hochladen: " + err.message); btn.disabled = false; btn.textContent = "Hochladen"; }
-  });
+  var uploadBtn = document.getElementById("dateiUploadBtn");
+  if(uploadBtn){
+    uploadBtn.addEventListener("click", async function(){
+      var input = document.getElementById("dateiInput");
+      var file = input.files[0];
+      if(!file){ toast("Bitte eine Datei auswählen."); return; }
+      var btn = document.getElementById("dateiUploadBtn");
+      btn.disabled = true; btn.textContent = "Lädt hoch …";
+      try{
+        var path = projektId + "/" + Date.now() + "-" + file.name.replace(/[^a-zA-Z0-9_.-]/g, "_");
+        await storageUpload(path, file);
+        await addDateiRecord(projektId, file.name, path, file.size);
+        await refreshDateienHost(projektId);
+      }catch(err){ toast("Fehler beim Hochladen: " + err.message); btn.disabled = false; btn.textContent = "Hochladen"; }
+    });
+  }
 }
 
 /* ---------- Wiring ---------- */
