@@ -52,8 +52,13 @@ function emailShell(preheader: string, bodyHtml: string): string {
     '<table role="presentation" width="100%" style="max-width:480px;" cellpadding="0" cellspacing="0"><tr><td style="background-color:#fffdf8;border:1px solid rgba(27,21,14,0.12);border-radius:8px;overflow:hidden;font-family:-apple-system,\'Helvetica Neue\',Arial,sans-serif;">' +
     '<table role="presentation" width="100%" cellpadding="0" cellspacing="0">' +
     '<tr><td style="padding:26px 32px 16px;border-bottom:3px solid #a68a73;">' +
+    '<a href="https://gym7-fit.github.io/vitaro-homegym-preview/" style="text-decoration:none;display:inline-block;">' +
     '<div style="font-family:Georgia,\'Times New Roman\',serif;font-size:20px;font-weight:600;letter-spacing:4px;color:#1b1712;">VITARO</div>' +
-    '<div style="font-size:10px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:#6e6357;margin-top:3px;">Home Gyms</div>' +
+    '<table role="presentation" width="130" cellpadding="0" cellspacing="0" style="margin-top:4px;"><tr>' +
+    '<td style="font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#6e6357;text-align:left;">HOME</td>' +
+    '<td style="font-size:10px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#6e6357;text-align:right;">GYMS</td>' +
+    '</tr></table>' +
+    '</a>' +
     '</td></tr>' +
     '<tr><td style="padding:26px 32px 30px;font-size:14px;line-height:1.6;color:#1b1712;">' + bodyHtml + '</td></tr>' +
     '</table></td></tr>' +
